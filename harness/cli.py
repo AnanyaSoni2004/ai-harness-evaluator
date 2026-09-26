@@ -25,11 +25,37 @@ def self_check() -> int:
     return 0
 
 
+def ping() -> int:
+    """Probe tool mode and send one tiny request to the configured model."""
+    from harness.config import load_config
+    from harness.events import Trajectory
+    from harness.llm import LLMClient
+    from harness.types import HarnessError, Metrics
+
+    try:
+        cfg = load_config()
+        cfg.api_key()
+        metrics = Metrics()
+        client = LLMClient(cfg, metrics, Trajectory(None))
+        mode = client.tool_mode
+        resp = client.complete([{"role": "user", "content": "Reply with exactly: PONG"}], None, "ping")
+    except HarnessError as e:
+        print(f"Ping failed: {e}")
+        return 1
+    print(f"Model:     {cfg.model.name}")
+    print(f"Tool mode: {mode}")
+    print(f"Reply:     {resp.text.strip()!r}")
+    print(f"Tokens:    {metrics.prompt_tokens} prompt + {metrics.completion_tokens} completion "
+          f"({metrics.llm_calls} calls incl. probe)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser for the harness CLI."""
     parser = argparse.ArgumentParser(prog="harness", description="Autonomous coding-agent harness.")
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     parser.add_argument("--self-check", action="store_true", help="import all modules and exit")
+    parser.add_argument("--ping", action="store_true", help="send one tiny request to the configured model")
     return parser
 
 
@@ -41,5 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.self_check:
         return self_check()
+    if args.ping:
+        return ping()
     build_parser().print_help()
     return 0
