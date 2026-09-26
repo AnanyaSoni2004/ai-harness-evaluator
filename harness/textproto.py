@@ -62,6 +62,36 @@ def _type_label(prop: dict) -> str:
     return kind
 
 
+def _example_value(pname: str, prop: dict) -> Any:
+    """A plausible placeholder value for one parameter, based on its schema."""
+    if prop.get("enum"):
+        return prop["enum"][0]
+    kind = prop.get("type", "string")
+    if kind in ("integer", "number"):
+        return 1
+    if kind == "boolean":
+        return False
+    if kind == "array":
+        return [_example_value(pname, prop.get("items") or {})]
+    if kind == "object":
+        return {}
+    return f"<{pname}>"
+
+
+def example_call(schema: dict) -> dict:
+    """A compact, valid example call for a tool: its required parameters (or the first one if none)."""
+    fn = schema.get("function", schema)
+    params = fn.get("parameters") or {}
+    props = params.get("properties") or {}
+    names = [n for n in (params.get("required") or []) if n in props] or list(props)[:1]
+    return {"name": fn.get("name", "?"), "arguments": {n: _example_value(n, props[n]) for n in names}}
+
+
+def format_example(schema: dict) -> str:
+    """'Example: {"name": ..., "arguments": {...}}' for appending to argument errors."""
+    return "Example: " + json.dumps(example_call(schema))
+
+
 def render_tool_instructions(schemas: list[dict]) -> str:
     """Explain the ```tool block protocol and list every tool with its parameters."""
     lines = [
@@ -71,9 +101,10 @@ def render_tool_instructions(schemas: list[dict]) -> str:
         '{"name": "<tool>", "arguments": {...}}',
         "```",
         "The block must contain valid JSON. You will receive the result in the next message.",
-        "",
-        "Available tools:",
     ]
+    if schemas:
+        lines += ["Example of a correct reply:", "```tool", json.dumps(example_call(schemas[0])), "```"]
+    lines += ["", "Available tools:"]
     for schema in schemas:
         fn = schema.get("function", schema)
         lines.append(f"- {fn.get('name', '?')}: {fn.get('description', '').strip()}")

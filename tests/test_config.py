@@ -108,3 +108,9 @@ def test_force_text_mode_for(tmp_path: Path) -> None:
     assert cfg.model.force_text_mode_for == ["qwen", "deepseek-reasoner"]
     assert load_config(_write(tmp_path, "model:\n  force_text_mode_for: qwen\n")).model.force_text_mode_for == ["qwen"]
     assert load_config(_write(tmp_path, "model:\n  force_text_mode_for: null\n")).model.force_text_mode_for == []
+
+
+def test_max_consecutive_parse_failures(tmp_path: Path) -> None:
+    assert load_config().model.max_consecutive_parse_failures == 3
+    cfg = load_config(_write(tmp_path, "model:\n  max_consecutive_parse_failures: 5\n"))
+    assert cfg.model.max_consecutive_parse_failures == 5

@@ -216,3 +216,42 @@ def test_length_finish_warns(monkeypatch) -> None:
     resp = client.complete([], None, "localize")
     assert resp.text == "" and resp.tool_calls == []
     assert len(warnings) == 1 and "cut off" in warnings[0]
+
+
+# ---------------------------------------------------------------- Phase M4: robustness for smaller models
+import json as _json  # noqa: E402
+import re as _re  # noqa: E402
+
+from harness.textproto import example_call, format_example  # noqa: E402
+
+
+def test_example_call_uses_required_params() -> None:
+    assert example_call(SCHEMAS[0]) == {"name": "view_file", "arguments": {"path": "<path>"}}
+
+
+def test_example_call_types_and_enums() -> None:
+    schema = {"name": "t", "parameters": {"type": "object", "properties": {
+        "n": {"type": "integer"}, "flag": {"type": "boolean"}, "tags": {"type": "array", "items": {"type": "string"}},
+        "level": {"type": "string", "enum": ["high", "low"]}, "opts": {"type": "object"},
+    }, "required": ["n", "flag", "tags", "level", "opts"]}}
+    assert example_call(schema)["arguments"] == {"n": 1, "flag": False, "tags": ["<tags>"], "level": "high", "opts": {}}
+
+
+def test_example_call_without_required_uses_first_param() -> None:
+    assert example_call(SCHEMAS[1])["arguments"] == {"files": ["<files>"]}
+    assert example_call({"name": "noop", "parameters": {}}) == {"name": "noop", "arguments": {}}
+
+
+def test_format_example_is_valid_json() -> None:
+    text = format_example(SCHEMAS[0])
+    assert text.startswith("Example: ")
+    assert _json.loads(text[len("Example: "):])["name"] == "view_file"
+
+
+def test_instructions_contain_parseable_one_shot_example() -> None:
+    text = render_tool_instructions(SCHEMAS)
+    block = _re.search(r"Example of a correct reply:\n(```tool\n.*?\n```)", text, _re.DOTALL).group(1)
+    call = _one(block)
+    assert call.name == "view_file" and call.arguments == {"path": "<path>"}
+    assert len(block) / 3.5 < 80  # cheap: well under ~80 tokens
+    assert "Example of a correct reply" not in render_tool_instructions([])

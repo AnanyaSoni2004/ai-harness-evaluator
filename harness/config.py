@@ -29,6 +29,7 @@ class ModelConfig:
     context_window: int = 128000
     tool_mode: str = "auto"
     force_text_mode_for: list[str] = field(default_factory=list)
+    max_consecutive_parse_failures: int = 3
     request_timeout_s: float = 120
     max_retries: int = 5
 

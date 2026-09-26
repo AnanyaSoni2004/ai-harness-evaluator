@@ -18,6 +18,7 @@ model:
   context_window: 128000
   tool_mode: auto              # auto | native | text  (auto = probe the endpoint once; keep auto)
   force_text_mode_for: []      # case-insensitive substrings of name that skip the probe and use text mode
+  max_consecutive_parse_failures: 3   # end a phase (reason protocol_failure) after this many unparseable replies
   request_timeout_s: 120
   max_retries: 5
 budgets:
