@@ -215,3 +215,14 @@ def test_run_tests_tool_and_registry(tiny: Workspace) -> None:
     reg = build_registry(tiny, cfg, test_runner=runner)
     assert "run_tests" in reg.names()
     assert "2 passed, 1 failed, 0 errors" in reg.dispatch(ToolCall("c", "run_tests", {})).output  # full suite
+
+
+def test_run_tests_tool_labels_pre_existing_failures(tiny: Workspace) -> None:
+    runner = TestRunner(tiny, None, python_exe=PY)
+    runner.known_failures = {"tests/test_calc.py::test_add"}
+    out = runner.run_tests_tool("tests/test_calc.py").output
+    assert "tests/test_calc.py::test_add (already failing before your change; ignore unless related" in out
+    assert "No NEW failures: every failing test was already failing before your change." in out
+    runner.known_failures = set()
+    out = runner.run_tests_tool("tests/test_calc.py").output
+    assert "already failing" not in out and "No NEW failures" not in out

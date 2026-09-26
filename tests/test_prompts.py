@@ -173,3 +173,9 @@ def test_review_prompt_names_top_suspect() -> None:
     other = prompts.review_prompt(with_spectrum(SPECTRUM), "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\n", {})
     assert "(patch touches it: no)." in other
     assert "Top suspicious function" not in prompts.review_prompt(sample_state(), diff, {})
+
+
+def test_phase_tasks_say_what_is_editable() -> None:
+    state = sample_state()
+    assert "editing tools become available in the FIX phase" in prompts.localize_task(state, "")
+    assert "only @scratch/ is writable here" in prompts.reproduce_task(state)

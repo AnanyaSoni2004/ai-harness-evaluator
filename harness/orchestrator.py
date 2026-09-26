@@ -250,6 +250,8 @@ class Orchestrator:
         """One FIX + VERIFY (+ REVIEW). Returns (success, feedback for the next attempt)."""
         with self._timed("fix", f"attempt {n} ({kind})"):
             self.ws.write_scope = "repo"
+            self.runner.known_failures = {t for run in (self.state.baseline_full, self.state.baseline_targeted)
+                                          for t in (getattr(run, "failing_ids", None) or [])}
             max_attempts = self.cfg.phases.max_fix_attempts if kind == "fix" else n
             res = self._agent("fix", None, FIX_FINISH, prompts.fix_task(self.state, n, feedback, max_attempts),
                               self.cfg.phases.fix_max_steps)

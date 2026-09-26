@@ -182,3 +182,14 @@ def test_budget_hit_mid_attempt_still_verifies_current_changes(repo: Path, cfg) 
     assert last["kind"] == "budget" and last["passed"] and last["verification"]["repro_after_exit"] == 0
     assert 'raise ValueError("insufficient stock")' in (run_dir / "patch.diff").read_text()
     assert run_hidden_test(repo) == 0
+
+
+def test_fix_phase_knows_pre_existing_failures(repo: Path, cfg) -> None:
+    cfg.phases.max_fix_attempts, cfg.phases.enable_rescue = 1, False
+    script = up_to_fix() + [r(call("run_tests", targets="")), r(call("finish", summary="looked around"))]
+    llm = FakeLLM(script)
+    state, _ = Orchestrator(cfg, llm, python_exe=PY).solve(repo, ISSUE)
+    assert state.status == "no_fix" and llm.script == []  # ends cleanly, no scripted replies left over
+    run_tests_output = next(m["content"] for msgs in llm.calls for m in msgs
+                            if m.get("role") == "tool" and m.get("name") == "run_tests")
+    assert f"{PRE_EXISTING} (already failing before your change" in run_tests_output

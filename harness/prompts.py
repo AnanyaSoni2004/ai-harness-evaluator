@@ -82,7 +82,8 @@ def localize_task(state: RunState, repo_map_text: str, max_steps: int = 15) -> s
     cands = [f"{i}. {c.get('path')} (score {c.get('score')}; terms: {', '.join(c.get('terms') or [])})"
              for i, c in enumerate(state.candidates[:10], 1)] or ["(no keyword matches; explore with search_code)"]
     return _cap_task(
-        "PHASE: LOCALIZE. Goal: find the exact code responsible for this issue. Do NOT edit anything.\n"
+        "PHASE: LOCALIZE. Goal: find the exact code responsible for this issue. Do NOT edit anything:\n"
+        "only read tools exist in this phase; editing tools become available in the FIX phase.\n"
         f"Issue: {_issue_line(state)}\n"
         f"Expected: {_t(issue.expected, 500) or 'not stated'}\n"
         f"Actual: {_t(issue.actual, 500) or 'not stated'}\n"
@@ -107,7 +108,8 @@ def reproduce_task(state: RunState) -> str:
         'It must print "BUG PRESENT" and exit with code 1 while the problem exists, and print "BUG FIXED" and exit 0\n'
         "once it is fixed. For a feature request, check the requested behaviour the same way.\n"
         "Run it with run_command (cwd = repository root; the repository root is on PYTHONPATH).\n"
-        "Do not modify repository files. If a script cannot reproduce it (needs network/UI/credentials), finish with\n"
+        "Do not modify repository files (only @scratch/ is writable here; the fix comes in the FIX phase).\n"
+        "If a script cannot reproduce it (needs network/UI/credentials), finish with\n"
         "reproduced=false and explain in observed.\n"
         f"Localization: {_t(', '.join(loc.get('files') or []), 400) or 'unknown'} / "
         f"{_t(', '.join(loc.get('symbols') or []), 400) or 'unknown'}\n"

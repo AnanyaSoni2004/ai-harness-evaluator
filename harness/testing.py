@@ -105,6 +105,7 @@ class TestRunner:
         self.python_exe = python_exe
         self._detected: dict | None = None
         self._python_cache: str | None = None
+        self.known_failures: set[str] = set()  # test IDs failing before any change (set by the orchestrator)
 
     # ------------------------------------------------------------------ detection
     def python(self) -> str:
@@ -228,9 +229,13 @@ class TestRunner:
             lines.append("WARNING: the test environment looks broken (import/collection error), not necessarily "
                          "your change.")
         if run.failing_ids:
-            shown = run.failing_ids[:20]
+            labelled = [f"{t} (already failing before your change; ignore unless related to this issue)"
+                        if t in self.known_failures else t for t in run.failing_ids[:20]]
             more = f" (+{len(run.failing_ids) - 20} more)" if len(run.failing_ids) > 20 else ""
-            lines.append("Failing: " + ", ".join(shown) + more)
+            lines.append("Failing: " + ", ".join(labelled) + more)
+            new = [t for t in run.failing_ids if t not in self.known_failures]
+            if self.known_failures and not new:
+                lines.append("No NEW failures: every failing test was already failing before your change.")
         max_chars = int(_cfg(self.cfg, "context", "max_tool_output_chars", 8000))
         lines.append(truncate(run.output_tail, max(500, max_chars - 1000)))
         ok = run.exit_code in (0, 5) and not run.timed_out
