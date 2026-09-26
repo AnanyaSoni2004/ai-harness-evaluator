@@ -50,6 +50,27 @@ MIN_MAX_TOKENS = 256
 _MAX_TOKENS_CAP: dict[str, int] = {}  # model name -> max_tokens learned from "Request too large" errors
 
 
+class ToolUseFailed(Exception):
+    """The provider rejected the model's own tool call (Groq: HTTP 400 `tool_use_failed`)."""
+
+    def __init__(self, generation: str, message: str) -> None:
+        super().__init__(message)
+        self.generation = generation
+
+
+def _failed_generation(error: Exception) -> str:
+    """The rejected tool call text the provider echoes back (`failed_generation`), or ''."""
+    text = str(error)
+    start = text.find("{")
+    while start != -1:
+        try:
+            body = json.loads(text[start:])
+            return str((body.get("error") or {}).get("failed_generation") or "")
+        except ValueError:
+            start = text.find("{", start + 1)
+    return ""
+
+
 def parse_wait_hint(text: str) -> float | None:
     """Seconds from 'try again in 1m26.4s' / '32.832s' / '420ms', or None."""
     m = _TRY_AGAIN.search(text or "")
@@ -176,6 +197,9 @@ class LLMClient:
                 self._record_usage(raw, "probe")
                 mode, reason = self._judge_probe(message)
                 info = {"mode": mode, "reason": reason, "raw": self._raw_reply(message)}
+            except ToolUseFailed as e:
+                info = {"mode": "text", "reason": "provider rejected the model's tool call (tool_use_failed)",
+                        "raw": e.generation or str(e)}
             except FatalLLMError as e:
                 if isinstance(e.__cause__, BAD_REQUEST) and not isinstance(e.__cause__, AUTH_ERRORS):
                     info = {"mode": "text", "reason": "endpoint rejected tools (bad request)", "raw": str(e)}
@@ -226,6 +250,8 @@ class LLMClient:
             except AUTH_ERRORS as e:
                 raise FatalLLMError(AUTH_MESSAGE) from e
             except BAD_REQUEST as e:
+                if "tool_use_failed" in str(e):
+                    raise ToolUseFailed(_failed_generation(e), _provider_message(e)) from e
                 param = _rejected_param(str(e), kwargs)
                 if param is None:
                     raise FatalLLMError(str(e)) from e
@@ -272,6 +298,19 @@ class LLMClient:
                 self._sleep(delay)
                 attempt += 1
 
+    def _rejected_tool_call(self, error: ToolUseFailed, phase: str) -> LLMResponse:
+        """Turn a provider-rejected tool call into a response the agent answers with feedback."""
+        calls = textproto.parse_tool_calls(error.generation, f"call{self._n_calls}")
+        if not calls:
+            calls = [ToolCall(f"call{self._n_calls}_0", textproto.INVALID_TOOL, {},
+                              parse_error=f"the API rejected your tool call ({error})")]
+        usage = Usage()  # the provider reports no usage for rejected calls
+        self.metrics.add_llm(phase, usage)
+        self.trajectory.log("llm_tool_use_failed", phase=phase, message=str(error)[:300],
+                            generation=error.generation[:1000])
+        self.ui.warn("The API rejected the model's tool call; asking it to correct itself")
+        return LLMResponse(text=error.generation, tool_calls=calls, usage=usage, finish_reason="tool_use_failed")
+
     @staticmethod
     def _retry_after(error: Exception) -> float | None:
         """Seconds from an HTTP Retry-After header on the provider response, if present."""
@@ -314,7 +353,10 @@ class LLMClient:
         self._check_budget()
         native = self.tool_mode == "native"
         self._n_calls += 1
-        raw = self._call_with_retries(messages, tools if (tools and native) else None, phase)
+        try:
+            raw = self._call_with_retries(messages, tools if (tools and native) else None, phase)
+        except ToolUseFailed as e:
+            return self._rejected_tool_call(e, phase)
 
         choice = raw.choices[0]
         message = choice.message

@@ -369,3 +369,32 @@ def test_long_hint_or_exhausted_retries_become_budget_exceeded(monkeypatch):
     client.cfg.model.max_retries = 2
     with pytest.raises(BudgetExceeded, match="still limited after 2 retries"):
         client.complete([], None, "fix")
+
+
+# ---------------------------------------------------------------- provider-rejected tool calls (Groq tool_use_failed)
+GENERATION = '{"name": "str_replace", "arguments": {"path": "toolkit/inventory.py", "old_str": "a", "new_str": "b"}}'
+TOOL_USE_FAILED = ('GroqException - ' + json.dumps({"error": {
+    "message": "Tool call validation failed: attempted to call tool 'str_replace' which was not in request.tools",
+    "type": "invalid_request_error", "code": "tool_use_failed", "failed_generation": GENERATION}}))
+
+
+def test_rejected_tool_call_becomes_a_response(monkeypatch):
+    bad = litellm.BadRequestError(message=TOOL_USE_FAILED, model="m", llm_provider="groq")
+    client = make_client(monkeypatch, Recorder(bad))
+    resp = client.complete([], [llm_mod.PING_TOOL], "localize")
+    assert resp.finish_reason == "tool_use_failed" and resp.text == GENERATION
+    assert resp.tool_calls[0].name == "str_replace" and resp.tool_calls[0].arguments["new_str"] == "b"
+    assert client.metrics.llm_calls == 1
+
+
+def test_rejected_tool_call_without_generation(monkeypatch):
+    body = 'GroqException - {"error": {"message": "Failed to call a function.", "code": "tool_use_failed"}}'
+    bad = litellm.BadRequestError(message=body, model="m", llm_provider="groq")
+    resp = make_client(monkeypatch, Recorder(bad)).complete([], [llm_mod.PING_TOOL], "fix")
+    assert resp.tool_calls[0].name == "__invalid__" and "rejected" in resp.tool_calls[0].parse_error
+
+
+def test_probe_treats_tool_use_failed_as_text(monkeypatch):
+    bad = litellm.BadRequestError(message=TOOL_USE_FAILED, model="m", llm_provider="groq")
+    client = make_client(monkeypatch, Recorder(bad), tool_mode="auto")
+    assert client.tool_mode == "text" and "tool_use_failed" in client.probe_info["reason"]

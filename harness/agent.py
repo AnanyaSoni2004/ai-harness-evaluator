@@ -143,8 +143,34 @@ class AgentLoop:
         return result
 
     # ------------------------------------------------------------------ turns
+    def _handle_rejected(self, resp: LLMResponse) -> PhaseResult | None:
+        """A tool call the provider rejected (native mode): answer it as text, never as a native tool_call."""
+        self._nudges = 0
+        self._parse_failures += 1
+        call = resp.tool_calls[0] if resp.tool_calls else None
+        self.history.append({"role": "assistant", "content": resp.text or "(tool call rejected by the API)"})
+        if call is not None and call.name == FINISH and not call.parse_error and self._finish_problem(call) is None:
+            self.metrics.add_tool(self.phase)
+            self.trajectory.log("phase_finish", phase=self.phase, result=call.arguments, steps=self.steps)
+            return PhaseResult(self.phase, True, dict(call.arguments), self.steps)
+        if call is None:
+            result = ToolResult(False, "The API rejected your tool call. Call exactly one of the available tools.")
+        elif call.name == FINISH:
+            result = ToolResult(False, self._finish_problem(call) or f"Invalid finish call: {call.parse_error}")
+        else:
+            result = self._execute(call)
+        self.history.append({"role": "user", "content": "Your tool call was rejected by the API. "
+                             + textproto.format_tool_result(call.name if call else "?", result)})
+        limit = int(getattr(self.cfg.model, "max_consecutive_parse_failures", 3) or 3)
+        if self._parse_failures >= limit:
+            self.trajectory.log("protocol_failure", phase=self.phase, failures=self._parse_failures)
+            return PhaseResult(self.phase, False, {"text": self._last_text}, self.steps, "protocol_failure")
+        return None
+
     def _handle(self, resp: LLMResponse) -> PhaseResult | None:
         """Apply one model reply to the history; a PhaseResult ends the phase."""
+        if resp.finish_reason == "tool_use_failed":
+            return self._handle_rejected(resp)
         calls = resp.tool_calls if self.native else resp.tool_calls[:1]
         self._last_text = resp.text or self._last_text
         if not calls:

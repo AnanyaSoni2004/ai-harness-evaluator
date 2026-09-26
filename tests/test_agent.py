@@ -245,3 +245,47 @@ def test_reasoning_never_enters_history(ws, cfg) -> None:
     loop.run()
     assert "SECRET_CHAIN_OF_THOUGHT" not in contents(llm.calls[1])
     assert "Looking at a.py" in contents(llm.calls[1])
+
+
+# ---------------------------------------------------------------- provider-rejected tool calls
+def rejected(name: str, **args) -> LLMResponse:
+    generation = json.dumps({"name": name, "arguments": args})
+    return LLMResponse(generation, [call(name, **args)], Usage(0, 0), "tool_use_failed")
+
+
+def read_only_loop(ws, cfg, script):
+    registry = build_registry(ws, cfg).subset(["view_file", "list_dir"])
+    registry.register(make_finish_tool({"summary": {"type": "string"}}, ["summary"], "End."))
+    llm = FakeLLM(script)
+    loop = AgentLoop(llm, registry, "sys", "task", "localize", cfg, llm.metrics, Trajectory(None))
+    return loop, llm
+
+
+def test_rejected_call_gets_feedback_not_a_native_tool_call(ws, cfg) -> None:
+    loop, llm = read_only_loop(ws, cfg, [rejected("str_replace", path="a.py", old_str="1", new_str="2"),
+                                         resp(call("finish", summary="found it"))])
+    result = loop.run()
+    assert result.finished and result.result == {"summary": "found it"}
+    history = llm.calls[1][2:]
+    assert all("tool_calls" not in m for m in history)  # the rejected call is never echoed as a native call
+    assert history[-1]["role"] == "user" and "rejected by the API" in history[-1]["content"]
+    assert "Unknown tool 'str_replace'. Available: view_file, list_dir, finish" in history[-1]["content"]
+    assert (ws.repo_root / "a.py").read_text() == "def f():\n    return 1\n"  # nothing was edited
+
+
+def test_rejected_but_valid_call_is_answered(ws, cfg) -> None:
+    loop, llm = read_only_loop(ws, cfg, [rejected("view_file", path="a.py"), resp(call("finish", summary="x"))])
+    assert loop.run().finished
+    assert "return 1" in llm.calls[1][-1]["content"]
+
+
+def test_rejected_finish_with_valid_fields_finishes(ws, cfg) -> None:
+    loop, _ = read_only_loop(ws, cfg, [rejected("finish", summary="done anyway")])
+    result = loop.run()
+    assert result.finished and result.result == {"summary": "done anyway"}
+
+
+def test_repeated_rejections_end_with_protocol_failure(ws, cfg) -> None:
+    loop, _ = read_only_loop(ws, cfg, [rejected("str_replace", path="a.py") for _ in range(3)])
+    result = loop.run()
+    assert not result.finished and result.reason == "protocol_failure" and result.steps == 3
