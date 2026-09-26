@@ -70,7 +70,7 @@ def test_write_report_files_and_tables(ws: Workspace, tmp_path: Path) -> None:
     assert md.startswith("# ✅ VERIFIED FIX")
     assert "## Evidence" in md and "| Check | Before | After |" in md
     assert "## Efficiency" in md and "| Phase | LLM calls | Prompt tokens |" in md
-    assert "| Reproduction (`python3 @scratch/repro.py`) | exit 1 | exit 0 |" in md
+    assert "| Reproduction (python3 @scratch/repro.py) | exit 1 | exit 0 |" in md
     assert "| Targeted tests (1 file(s)) | 3 passed / 0 failed | 4 passed / 0 failed |" in md
     assert "| Full suite | 20 passed / 1 failed | 21 passed / 1 failed |" in md
     assert "| New failures (must be empty) | — | none ✅ |" in md

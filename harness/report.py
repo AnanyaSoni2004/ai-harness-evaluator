@@ -62,6 +62,27 @@ def _exit(code: Any) -> str:
     return "n/a" if code is None else f"exit {code}"
 
 
+def evidence_rows(state: RunState, attempt: dict) -> list[tuple[str, str, str]]:
+    """(check, before, after) rows shared by report.md and the terminal UI."""
+    v = attempt.get("verification") or {}
+    repro = state.repro
+    new = v.get("new_failures") or []
+    review = attempt.get("review") or {}
+    if repro.get("reproduced"):
+        repro_row = (f"Reproduction ({repro.get('command')})", _exit(v.get("repro_before_exit")),
+                     _exit(v.get("repro_after_exit")))
+    else:
+        repro_row = ("Reproduction", "not reproduced", str(repro.get("observed") or "n/a"))
+    verdict = str(review.get("verdict", "not run")) + (f" ({review['confidence']})" if review.get("confidence") else "")
+    return [repro_row,
+            (f"Targeted tests ({len(state.targeted_tests)} file(s))", _counts(v.get("targeted_before")),
+             _counts(v.get("targeted_after"))),
+            ("Full suite", _counts(v.get("full_before")), _counts(v.get("full_after"))),
+            ("New failures (must be empty)", "—", "none ✅" if not new else "❌ " + ", ".join(new)),
+            ("Fixed tests", "—", ", ".join(v.get("fixed") or []) or "none"),
+            ("Review verdict", "—", verdict)]
+
+
 def evidence_section(state: RunState, attempt: dict | None, kept: bool) -> list[str]:
     """The Evidence table plus reproduction output tails."""
     out = ["## Evidence", ""]
@@ -74,20 +95,11 @@ def evidence_section(state: RunState, attempt: dict | None, kept: bool) -> list[
     if not kept:
         out += [f"_Showing attempt {attempt['attempt']}, which was **not kept** (its changes were reverted)._", ""]
     repro = state.repro
-    new = v.get("new_failures") or []
     review = attempt.get("review") or {}
-    cmd = f" (`{_cell(repro.get('command'))}`)" if repro.get("command") else ""
-    repro_row = (f"| Reproduction{cmd} | {_exit(v.get('repro_before_exit'))} | {_exit(v.get('repro_after_exit'))} |"
-                 if repro.get("reproduced") else
-                 f"| Reproduction | not reproduced | {_cell(repro.get('observed') or 'n/a')} |")
-    out += ["| Check | Before | After |", "| --- | --- | --- |", repro_row,
-            f"| Targeted tests ({len(state.targeted_tests)} file(s)) | {_counts(v.get('targeted_before'))} | "
-            f"{_counts(v.get('targeted_after'))} |",
-            f"| Full suite | {_counts(v.get('full_before'))} | {_counts(v.get('full_after'))} |",
-            f"| New failures (must be empty) | — | {'none ✅' if not new else '❌ ' + _cell(', '.join(new))} |",
-            f"| Fixed tests | — | {_cell(', '.join(v.get('fixed') or []) or 'none')} |",
-            f"| Review verdict | — | {_cell(review.get('verdict', 'not run'))}"
-            f"{' (' + review['confidence'] + ')' if review.get('confidence') else ''} |", ""]
+    out += ["| Check | Before | After |", "| --- | --- | --- |"]
+    out += [f"| {_cell(check)} | {_cell(before)} | {_cell(after)} |" for check, before, after in
+            evidence_rows(state, attempt)]
+    out.append("")
     for note in v.get("notes") or []:
         out.append(f"- {note}")
     if repro.get("reproduced"):

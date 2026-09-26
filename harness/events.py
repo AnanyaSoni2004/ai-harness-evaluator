@@ -64,3 +64,18 @@ class NullUI:
     def thinking(self, label: str) -> ContextManager[Any]:
         """Context manager shown while waiting for the model."""
         return contextlib.nullcontext()
+
+    def error(self, msg: str) -> None:
+        """An error message."""
+
+    def banner(self, model: str, tool_mode: str, version: str) -> None:
+        """Start-up banner."""
+
+    def show_verification(self, attempt: Any, state: Any = None) -> None:
+        """Verification table for the final attempt."""
+
+    def show_diff(self, diff: str) -> None:
+        """The final patch."""
+
+    def show_summary(self, state: Any, metrics: Any, paths: dict) -> None:
+        """Final result summary."""
