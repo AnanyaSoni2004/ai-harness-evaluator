@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from harness.shell import truncate
+from harness.spectrum import touched_ranks
 from harness.types import RunState
 
 MAX_TASK_TOKENS = 2500
@@ -114,6 +115,21 @@ def reproduce_task(state: RunState) -> str:
         "Finish with reproduced, command, observed.")
 
 
+def spectrum_block(state: RunState) -> str:
+    """Tracer evidence for the FIX prompt, plus a note when it disagrees with LOCALIZE ('' if unavailable)."""
+    spec = state.spectrum or {}
+    evidence = str(spec.get("evidence") or "")
+    if not spec.get("ok") or not evidence:
+        return ""
+    block = _t(evidence, 3000)
+    top = (spec.get("functions") or [{}])[0]
+    files = list(state.localization.get("files") or [])
+    if top.get("path") and top["path"] not in files:
+        block += (f"\nNOTE: execution evidence points to {top['path']}::{top.get('name')}, but localization chose "
+                  f"{', '.join(files) or 'nothing'}. Check both before editing.")
+    return block + "\n"
+
+
 def fix_task(state: RunState, attempt: int, feedback: str = "", max_attempts: int = 3) -> str:
     """FIX: minimal edit of the root cause, verified by the repro and relevant tests."""
     issue, loc, repro = state.issue, state.localization, state.repro
@@ -132,6 +148,7 @@ def fix_task(state: RunState, attempt: int, feedback: str = "", max_attempts: in
         f"Actual: {_t(issue.actual, 400) or 'not stated'}\n"
         f"Root cause analysis: {_t(loc.get('root_cause'), 1000) or 'unknown'}   "
         f"Files: {_t(', '.join(loc.get('files') or []), 400) or 'unknown'}\n"
+        f"{spectrum_block(state)}"
         f"{repro_line}\n"
         f"Relevant tests: {targeted}\n"
         f"Tests already failing BEFORE your change (not your concern unless related to this issue): "
@@ -166,6 +183,16 @@ def format_verification(v: dict) -> str:
     return "\n".join(lines)
 
 
+def _suspect_line(state: RunState, diff: str) -> str:
+    """'Top suspicious function: X (patch touches it: yes/no).' when the Tracer produced a ranking."""
+    spec = state.spectrum or {}
+    functions = spec.get("functions") or []
+    if not spec.get("ok") or not functions:
+        return ""
+    touches = "yes" if 1 in touched_ranks(diff, functions[:1]) else "no"
+    return f"Top suspicious function: {functions[0].get('name')} (patch touches it: {touches}).\n"
+
+
 def review_prompt(state: RunState, diff: str, verification: dict) -> str:
     """REVIEW: one call, no tools, JSON verdict on the patch."""
     issue = state.issue
@@ -174,7 +201,8 @@ def review_prompt(state: RunState, diff: str, verification: dict) -> str:
         f"Issue: {_issue_line(state)}  |  Expected: {_t(issue.expected, 400) or 'not stated'}\n"
         "Patch:\n```diff\n" + _t(diff, 4500) + "\n```\n"
         "Verification evidence:\n" + _t(format_verification(verification or {}), 1200) + "\n"
-        "Check: fixes the root cause (not just the symptom)? breaks other callers? edge cases handled? minimal?\n"
+        + _suspect_line(state, diff)
+        + "Check: fixes the root cause (not just the symptom)? breaks other callers? edge cases handled? minimal?\n"
         "leftover debug code? Respond with ONLY JSON:\n"
         '{"verdict": "approve"|"revise", "problems": [str], "confidence": "high"|"medium"|"low"}\n'
         'Use "revise" only for concrete, fixable problems.')

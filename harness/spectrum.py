@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from harness.events import NullUI, Trajectory
-from harness.shell import run_process
+from harness.shell import run_process, truncate
 from harness.types import SpectrumResult
 
 FORMULAS = ("ochiai", "tarantula")
@@ -257,3 +257,90 @@ class SpectrumAnalyzer:
         low = len(passing) < 3 or timed_out or (len(top) >= 2 and max(top) - min(top) < 0.05)
         return SpectrumResult(ok=True, lines=lines[:max(int(scfg.top_lines) * 3, 30)], functions=functions[:200],
                               failing_runs=len(failing), passing_runs=len(passing), low_confidence=low)
+
+
+# ---------------------------------------------------------------------- evidence for prompts and reports
+_HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@")
+CONFIDENT_CLOSING = ("Treat this as strong evidence, not proof: the defect may be a MISSING line (a guard that was "
+                     "never\nwritten) or a caller of this code. Confirm with view_file before editing.")
+LOW_CONFIDENCE_CLOSING = "Scores are close together, so this narrows the search only slightly — rely on your own analysis."
+
+
+def as_result(result: Any) -> SpectrumResult:
+    """Accept a SpectrumResult or its dict form (state.spectrum)."""
+    if isinstance(result, SpectrumResult):
+        return result
+    data = dict(result or {})
+    known = SpectrumResult.__dataclass_fields__
+    return SpectrumResult(**{k: v for k, v in data.items() if k in known}) if "ok" in data else SpectrumResult(ok=False)
+
+
+def changed_lines(diff: str) -> dict[str, set[int]]:
+    """Original-file line numbers each patch touches (removed lines, and the line above each insertion)."""
+    touched: dict[str, set[int]] = {}
+    path, old_line = "", 0
+    for line in diff.splitlines():
+        if line.startswith("--- "):
+            path = line[4:].strip()
+            path = path[2:] if path.startswith("a/") else path
+        elif line.startswith("+++ "):
+            new = line[4:].strip()
+            if path == "/dev/null":
+                path = new[2:] if new.startswith("b/") else new
+        elif (m := _HUNK.match(line)):
+            old_line = int(m.group(1))
+        elif line.startswith("-"):
+            touched.setdefault(path, set()).add(old_line)
+            old_line += 1
+        elif line.startswith("+"):
+            touched.setdefault(path, set()).add(max(old_line - 1, 1))
+        elif line.startswith(" "):
+            old_line += 1
+    return touched
+
+
+def touched_ranks(diff: str, functions: list[dict]) -> list[int]:
+    """1-based ranks of the ranked functions whose original lines the patch changes."""
+    touched = changed_lines(diff)
+    return [i for i, f in enumerate(functions, 1)
+            if any(f["start"] <= n <= f["end"] for n in touched.get(f["path"], ()))]
+
+
+def format_suspicious(result: Any, ws: Any, top_lines: int = 10, max_chars: int = 5000) -> str:
+    """The EXECUTION EVIDENCE block for the FIX prompt ('' when the Tracer has no result)."""
+    r = as_result(result)
+    if not r.ok or not r.lines:
+        return ""
+    formula = "Tarantula" if r.formula == "tarantula" else "Ochiai"
+    runs = "run" if r.failing_runs == 1 else "runs"
+    out = [f"EXECUTION EVIDENCE (spectrum-based fault localization, {formula}; {r.failing_runs} failing {runs}, "
+           f"{r.passing_runs} passing runs):",
+           "Lines executed by the failing reproduction but rarely by passing tests are more suspicious."]
+    rank_of = {(f["path"], f["name"]): i for i, f in enumerate(r.functions)}
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for item in r.lines[:top_lines]:
+        groups.setdefault((item["path"], item["function"]), []).append(item)
+    sources: dict[str, list[str]] = {}
+    for n, key in enumerate(sorted(groups, key=lambda k: rank_of.get(k, len(rank_of))), 1):
+        path, name = key
+        func = r.functions[rank_of[key]] if key in rank_of else groups[key][0]
+        out.append(f"#{n} {path}  {name} (L{func['start']}-L{func['end']})  score {func['score']:.2f}")
+        if path not in sources:
+            try:
+                sources[path] = ws.read_text(path).splitlines()
+            except (ValueError, OSError):
+                sources[path] = []
+        source, marked = sources[path], {i["line"]: i for i in groups[key]}
+        shown = sorted({n for ln in marked for n in (ln - 1, ln, ln + 1)
+                        if func["start"] <= n <= func["end"] and 1 <= n <= len(source)})
+        previous = None
+        for ln in shown:
+            if previous is not None and ln != previous + 1:
+                out.append("         ...")
+            item = marked.get(ln)
+            note = (f"        [score {item['score']:.2f}, fail {item['ef']}/{r.failing_runs}, "
+                    f"pass {item['ep']}/{r.passing_runs}]") if item else ""
+            out.append(f"   {'>>' if item else '  '} {ln:>3} | {source[ln - 1]}{note}")
+            previous = ln
+    out.append(LOW_CONFIDENCE_CLOSING if r.low_confidence else CONFIDENT_CLOSING)
+    return truncate("\n".join(out), max_chars, head_chars=max_chars - 400)

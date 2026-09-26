@@ -111,3 +111,65 @@ def test_huge_fields_keep_closing_instructions() -> None:
     assert r["fix"].rstrip().endswith("code you change.")
     assert r["review"].rstrip().endswith('concrete, fixable problems.')
     assert r["localize"].rstrip().endswith("confidence.")
+
+
+# ---------------------------------------------------------------- T5: Tracer evidence in prompts
+EVIDENCE = ("EXECUTION EVIDENCE (spectrum-based fault localization, Ochiai; 1 failing run, 3 passing runs):\n"
+            "#1 toolkit/inventory.py  Inventory.remove (L16-L21)  score 0.71\n   >>  20 |         current = 0")
+SPECTRUM = {"ok": True, "evidence": EVIDENCE, "low_confidence": False,
+            "functions": [{"path": "toolkit/inventory.py", "name": "Inventory.remove", "start": 16, "end": 21,
+                           "score": 0.71, "top_line": 20, "ef": 1, "ep": 1}]}
+
+
+def with_spectrum(spectrum: dict, files: list | None = None) -> RunState:
+    state = sample_state()
+    state.spectrum = dict(spectrum)
+    if files is not None:
+        state.localization["files"] = files
+    return state
+
+
+def test_fix_task_includes_evidence_after_root_cause() -> None:
+    state = with_spectrum(SPECTRUM, files=["toolkit/inventory.py"])
+    text = prompts.fix_task(state, 1, "")
+    assert "EXECUTION EVIDENCE" in text
+    assert text.index("Root cause analysis:") < text.index("EXECUTION EVIDENCE") < text.index("Reproduction:")
+    assert "NOTE: execution evidence points to" not in text
+    assert not PLACEHOLDER.search(text)
+
+
+def test_fix_task_without_tracer_has_no_block() -> None:
+    for spectrum in ({}, {"ok": False, "reason": "no reproduction"}, {"ok": True, "evidence": ""}):
+        assert "EXECUTION EVIDENCE" not in prompts.fix_task(with_spectrum(spectrum), 1, "")
+
+
+def test_mismatch_note_only_on_mismatch() -> None:
+    text = prompts.fix_task(with_spectrum(SPECTRUM, files=["toolkit/stock_report.py"]), 1, "")
+    assert ("NOTE: execution evidence points to toolkit/inventory.py::Inventory.remove, but localization chose "
+            "toolkit/stock_report.py. Check both before editing.") in text
+
+
+def test_low_confidence_wording_comes_from_the_block(tmp_path) -> None:
+    from harness.spectrum import LOW_CONFIDENCE_CLOSING
+    spectrum = dict(SPECTRUM, evidence=EVIDENCE + "\n" + LOW_CONFIDENCE_CLOSING, low_confidence=True)
+    assert LOW_CONFIDENCE_CLOSING in prompts.fix_task(with_spectrum(spectrum, ["toolkit/inventory.py"]), 1, "")
+
+
+def test_fix_task_with_evidence_stays_within_budgets() -> None:
+    huge = dict(SPECTRUM, evidence=EVIDENCE + "\n" + "   >>  99 | x = 1   [score 0.50]\n" * 400)
+    state = with_spectrum(huge, files=["elsewhere.py"])
+    text = prompts.fix_task(state, 2, "tests/test_x.py::test_y failed\n" * 200)
+    assert tokens(text) <= 2600
+    assert tokens(text) < 0.40 * 32768
+    assert text.rstrip().endswith("code you change.")
+
+
+def test_review_prompt_names_top_suspect() -> None:
+    diff = ("--- a/toolkit/inventory.py\n+++ b/toolkit/inventory.py\n@@ -19,3 +19,5 @@\n"
+            "         current = self._stock.get(item, 0)\n+        if qty > current:\n+            raise ValueError\n"
+            "         self._stock[item] = current - qty\n")
+    touched = prompts.review_prompt(with_spectrum(SPECTRUM), diff, verification())
+    assert "Top suspicious function: Inventory.remove (patch touches it: yes)." in touched
+    other = prompts.review_prompt(with_spectrum(SPECTRUM), "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\n", {})
+    assert "(patch touches it: no)." in other
+    assert "Top suspicious function" not in prompts.review_prompt(sample_state(), diff, {})

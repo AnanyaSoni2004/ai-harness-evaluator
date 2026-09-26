@@ -244,3 +244,79 @@ def test_crash_becomes_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(analyzer.runner, "detect", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     result = analyzer.analyze(state)
     assert not result.ok and result.reason == "crashed: RuntimeError: boom" and result.seconds >= 0
+
+
+# ---------------------------------------------------------------- T5: evidence block and diff helpers
+from harness.spectrum import changed_lines, format_suspicious, touched_ranks  # noqa: E402
+
+INV = SAMPLE / "toolkit" / "inventory.py"
+
+
+def bug4_result(tmp_path: Path):
+    analyzer, state, ws = make_analyzer(tmp_path, BUG4_REPRO)
+    return analyzer.analyze(state), ws
+
+
+def test_format_suspicious_block(tmp_path: Path) -> None:
+    result, ws = bug4_result(tmp_path)
+    text = format_suspicious(result, ws, top_lines=10, max_chars=5000)
+    lines = text.splitlines()
+    assert lines[0] == "EXECUTION EVIDENCE (spectrum-based fault localization, Ochiai; 1 failing run, 3 passing runs):"
+    assert lines[2] == "#1 toolkit/inventory.py  Inventory.remove (L16-L21)  score 0.71"
+    marked = [l for l in lines if l.startswith("   >> ")]
+    assert marked and all("[score " in l and "fail 1/1, pass" in l for l in marked)
+    assert "   >>  18 |         if qty <= 0:        [score 0.71, fail 1/1, pass 1/3]" in lines
+    assert "       19 |             raise ValueError(\"quantity must be positive\")" in lines  # context
+    assert "   >>  21 |         self._stock[item] = current - qty        [score 0.71, fail 1/1, pass 1/3]" in lines
+    assert text.endswith("Confirm with view_file before editing.")
+    assert "#2 " in text and "{" not in text.replace("{}", "")
+
+
+def test_format_suspicious_merges_adjacent_lines_and_is_empty_when_not_ok(tmp_path: Path) -> None:
+    result, ws = bug4_result(tmp_path)
+    text = format_suspicious(result, ws)
+    remove_block = text.split("#1 ", 1)[1].split("\n#2 ", 1)[0]
+    numbers = [int(l.split("|")[0].split()[-1]) for l in remove_block.splitlines()[1:] if "|" in l]
+    assert numbers == sorted(set(numbers)) and numbers == list(range(numbers[0], numbers[-1] + 1))
+    assert format_suspicious({"ok": False, "reason": "no reproduction"}, ws) == ""
+    assert format_suspicious({}, ws) == ""
+
+
+def test_format_suspicious_low_confidence_and_truncation(tmp_path: Path) -> None:
+    result, ws = bug4_result(tmp_path)
+    result.low_confidence = True
+    text = format_suspicious(result.to_dict(), ws)  # dict form (state.spectrum) accepted too
+    assert text.endswith("narrows the search only slightly — rely on your own analysis.")
+    short = format_suspicious(result, ws, max_chars=600)
+    assert len(short) < 700 and "chars truncated" in short and short.endswith("own analysis.")
+
+
+DIFF = """--- a/toolkit/inventory.py
++++ b/toolkit/inventory.py
+@@ -16,6 +16,8 @@
+     def remove(self, item, qty=1):
+         \"\"\"Remove `qty` units of `item`.\"\"\"
+         if qty <= 0:
+             raise ValueError("quantity must be positive")
+         current = self._stock.get(item, 0)
++        if qty > current:
++            raise ValueError("insufficient stock")
+         self._stock[item] = current - qty
+ 
+     def count(self, item):
+--- /dev/null
++++ b/tests/test_new.py
+@@ -0,0 +1,2 @@
++def test_x():
++    assert True
+"""
+
+
+def test_changed_lines_and_touched_ranks() -> None:
+    touched = changed_lines(DIFF)
+    assert touched["toolkit/inventory.py"] == {20}  # insertion after original line 20, context ignored
+    assert touched["tests/test_new.py"] == {1}
+    functions = [{"path": "toolkit/inventory.py", "name": "Inventory.count", "start": 23, "end": 25},
+                 {"path": "toolkit/inventory.py", "name": "Inventory.remove", "start": 16, "end": 21}]
+    assert touched_ranks(DIFF, functions) == [2]  # context lines 22-23 do not count as touching count()
+    assert touched_ranks("", functions) == []
