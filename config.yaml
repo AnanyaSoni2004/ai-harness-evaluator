@@ -1,5 +1,14 @@
 # Model: set name to the organiser-prescribed model (LiteLLM format "<provider>/<model>").
 # The API key is NEVER stored here. It is read from the AI_API_KEY environment variable.
+#
+# Ready-to-use profiles (copy name / api_base / context_window into the model section below):
+# DeepSeek (official):    name: "deepseek/deepseek-chat"     api_base: null            context_window: 65536
+# DeepSeek (reasoner):    name: "deepseek/deepseek-reasoner" api_base: null            context_window: 65536
+# Qwen (DashScope):       name: "dashscope/qwen-max"         api_base: null            context_window: 32768
+# Any OpenAI-compatible:  name: "openai/<served-model-name>"  api_base: "http://<host>:<port>/v1"
+#
+# context_window drives the context budgets: working_budget_tokens is capped at 55% of it and
+# max_tool_output_chars at ~6% of it (see harness/config.py), so a 32k model never gets a 48k prompt.
 model:
   name: "openai/gpt-4o-mini"   # <-- REPLACE with the prescribed model before submission
   api_base: null               # set only for OpenAI-compatible endpoints

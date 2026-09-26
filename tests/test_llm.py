@@ -54,6 +54,7 @@ def _env(monkeypatch):
     for name in ("HARNESS_MODEL", "HARNESS_API_BASE", "HARNESS_TOOL_MODE"):
         monkeypatch.delenv(name, raising=False)
     llm_mod._TOOL_MODE_CACHE.clear()
+    llm_mod._DROPPED_PARAMS.clear()
 
 
 def make_client(monkeypatch, recorder, tool_mode="native", tmp_path=None):
@@ -244,3 +245,56 @@ def test_ping_verbose_output(monkeypatch, capsys):
     assert "Probe:     text (no tool call in reply)" in out
     assert "I cannot call tools" in out and "Reply:     'PONG'" in out
     assert FAKE_KEY not in out
+
+
+# ---------------------------------------------------------------- Phase M3: portability
+def test_context_budgets_derived_from_32k_window(tmp_path):
+    path = tmp_path / "c.yaml"
+    path.write_text("model:\n  context_window: 32768\n")
+    cfg = load_config(str(path))
+    assert cfg.context.working_budget_tokens == int(32768 * 0.55) == 18022
+    assert cfg.context.max_tool_output_chars == int(32768 * 0.06 * 3.5) == 6881
+
+
+def test_context_budgets_unchanged_for_large_window():
+    cfg = load_config()  # 128k window: configured budgets are already below the caps
+    assert cfg.context.working_budget_tokens == 48000
+    assert cfg.context.max_tool_output_chars == 8000
+
+
+def test_unsupported_param_dropped_and_retried(monkeypatch, tmp_path):
+    bad = litellm.BadRequestError(message="Unsupported parameter: 'seed' is not supported with this model.",
+                                  model="m", llm_provider="openai")
+    rec = Recorder(bad, fake_response(content="ok"), fake_response(content="again"))
+    client = make_client(monkeypatch, rec, tmp_path=tmp_path)
+    assert client.complete([], None, "fix").text == "ok"
+    assert "seed" in rec.kwargs[0] and "seed" not in rec.kwargs[1]
+    client.complete([], None, "fix")
+    assert "seed" not in rec.kwargs[2]  # stays dropped for the rest of the process
+    assert rec.kwargs[1]["temperature"] == 0.0
+    assert "llm_param_dropped" in (tmp_path / "t.jsonl").read_text()
+
+
+def test_param_dropped_only_once(monkeypatch):
+    bad = [litellm.BadRequestError(message="temperature must be 1 for this model", model="m",
+                                   llm_provider="openai") for _ in range(2)]
+    rec = Recorder(*bad)
+    with pytest.raises(FatalLLMError, match="temperature"):
+        make_client(monkeypatch, rec).complete([], None, "fix")
+    assert len(rec.kwargs) == 2 and "temperature" not in rec.kwargs[1]
+
+
+def test_tool_choice_dropped_in_native_mode(monkeypatch):
+    bad = litellm.BadRequestError(message='"tool_choice" is not supported', model="m", llm_provider="openai")
+    rec = Recorder(bad, fake_response(tool_calls=[native_call("view_file", '{"path": "a.py"}')]))
+    resp = make_client(monkeypatch, rec).complete([], [llm_mod.PING_TOOL], "fix")
+    assert "tool_choice" not in rec.kwargs[1] and rec.kwargs[1]["tools"]
+    assert resp.tool_calls[0].name == "view_file"
+
+
+def test_unrelated_bad_request_not_retried(monkeypatch):
+    bad = litellm.BadRequestError(message="messages must not be empty", model="m", llm_provider="openai")
+    rec = Recorder(bad)
+    with pytest.raises(FatalLLMError):
+        make_client(monkeypatch, rec).complete([], None, "fix")
+    assert len(rec.kwargs) == 1

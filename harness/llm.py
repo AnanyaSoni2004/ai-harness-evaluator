@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import time
 from typing import Any, Callable
 
@@ -50,6 +51,20 @@ PING_TOOL = {
         },
     },
 }
+
+# Optional request parameters some endpoints reject; dropped per model after the first rejection.
+DROPPABLE_PARAMS = ("seed", "temperature", "tool_choice")
+_DROPPED_PARAMS: dict[str, set[str]] = {}
+
+
+def _rejected_param(error_text: str, kwargs: dict) -> str | None:
+    """The droppable parameter named in a bad-request error, if it is still being sent."""
+    lowered = error_text.lower()
+    for param in DROPPABLE_PARAMS:
+        if param in kwargs and re.search(rf"\b{param}\b", lowered):
+            return param
+    return None
+
 
 # Probe results ({"mode", "reason", "raw"}) are cached per (model, endpoint) for the process lifetime.
 _TOOL_MODE_CACHE: dict[tuple[str, str | None], dict[str, str]] = {}
@@ -169,6 +184,9 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        dropped = _DROPPED_PARAMS.setdefault(m.name, set())
+        for param in dropped:
+            kwargs.pop(param, None)
         attempt = 0
         while True:
             try:
@@ -179,7 +197,15 @@ class LLMClient:
             except AUTH_ERRORS as e:
                 raise FatalLLMError(AUTH_MESSAGE) from e
             except BAD_REQUEST as e:
-                raise FatalLLMError(str(e)) from e
+                param = _rejected_param(str(e), kwargs)
+                if param is None:
+                    raise FatalLLMError(str(e)) from e
+                # The endpoint rejects this parameter: drop it for the rest of the process, retry once.
+                dropped.add(param)
+                kwargs.pop(param)
+                self.trajectory.log("llm_param_dropped", phase=phase, model=m.name, param=param,
+                                    error=str(e)[:300])
+                self.ui.warn(f"Endpoint rejected '{param}'; dropping it for this run")
             except RETRYABLE as e:
                 if attempt >= m.max_retries:
                     raise FatalLLMError(f"Model endpoint failed after {attempt} retries: {e}") from e

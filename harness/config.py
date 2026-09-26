@@ -158,6 +158,17 @@ def _apply_env_overrides(cfg: Config) -> None:
         cfg.model.tool_mode = os.environ["HARNESS_TOOL_MODE"]
 
 
+CHARS_PER_TOKEN = 3.5
+
+
+def derive_context_budgets(cfg: Config) -> None:
+    """Cap context budgets by the model's window: 55% for history, ~6% per tool output."""
+    window = int(cfg.model.context_window)
+    cfg.context.working_budget_tokens = min(int(cfg.context.working_budget_tokens), int(window * 0.55))
+    cfg.context.max_tool_output_chars = min(int(cfg.context.max_tool_output_chars),
+                                            int(window * 0.06 * CHARS_PER_TOKEN))
+
+
 def load_config(path: str | None = None) -> Config:
     """Load config.yaml (default: the project root's), apply env overrides, and return a Config."""
     cfg_path = Path(path) if path else DEFAULT_CONFIG_PATH
@@ -197,4 +208,5 @@ def load_config(path: str | None = None) -> Config:
         cfg.model.force_text_mode_for = []
     if not cfg.output.workspaces_dir:
         cfg.output.workspaces_dir = str(Path(tempfile.gettempdir()) / "ai-harness-workspaces")
+    derive_context_budgets(cfg)
     return cfg
