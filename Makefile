@@ -48,7 +48,7 @@ demo: check-key
 	@$(PY) -m harness --demo
 
 eval: check-key
-	@$(PY) scripts/eval.py
+	@$(PY) scripts/eval.py $(EVAL_ARGS)
 
 clean:
 	rm -rf $(VENV) runs .pytest_cache
