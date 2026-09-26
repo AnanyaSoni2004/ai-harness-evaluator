@@ -26,7 +26,8 @@ def test_project_config_loads_with_defaults() -> None:
     cfg = load_config()
     assert cfg.model.temperature == 0.0
     assert cfg.model.tool_mode == "auto"
-    assert cfg.budgets.max_total_tokens == 600000
+    assert cfg.budgets.max_total_tokens == 120000 and cfg.budgets.soft_total_tokens == 45000
+    assert cfg.budgets.max_llm_calls == 45 and cfg.budgets.max_wall_clock_s == 900
     assert cfg.phases.max_fix_attempts == 3
     assert cfg.tests.command is None
     expected = Path(tempfile.gettempdir()) / "ai-harness-workspaces"

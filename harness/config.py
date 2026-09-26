@@ -38,9 +38,10 @@ class ModelConfig:
 class BudgetsConfig:
     """Hard limits for a whole run."""
 
-    max_total_tokens: int = 600000
-    max_llm_calls: int = 120
-    max_wall_clock_s: float = 1500
+    max_total_tokens: int = 120000   # hard cap per issue
+    soft_total_tokens: int = 45000   # beyond this, no new fix attempts
+    max_llm_calls: int = 45
+    max_wall_clock_s: float = 900
 
 
 @dataclass
@@ -71,7 +72,7 @@ class TestsConfig:
     __test__ = False  # not a pytest test class despite the name
 
     command: str | None = None
-    baseline_timeout_s: float = 600
+    baseline_timeout_s: float = 300
     targeted_timeout_s: float = 180
     run_full_suite_after_fix: bool = True
 

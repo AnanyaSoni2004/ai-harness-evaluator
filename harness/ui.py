@@ -108,6 +108,8 @@ class RichUI:
                  f"Tokens: {total['total_tokens']} ({total['prompt_tokens']} prompt + "
                  f"{total['completion_tokens']} completion)   LLM calls: {total['llm_calls']}   "
                  f"Tool calls: {total['tool_calls']}   Time: {total['seconds']:.1f}s"]
+        if getattr(state, "stop_reason", ""):
+            lines.append(f"Stopped early: {escape(state.stop_reason)}")
         if paths.get("report"):
             lines.append(f"Report: {escape(str(paths['report']))}")
         style = "green" if state.status == "verified" else "yellow" if state.status != "error" else "red"

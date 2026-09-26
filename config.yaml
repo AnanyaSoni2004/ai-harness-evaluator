@@ -22,10 +22,11 @@ model:
   max_consecutive_parse_failures: 3   # end a phase (reason protocol_failure) after this many unparseable replies
   request_timeout_s: 120
   max_retries: 5
-budgets:
-  max_total_tokens: 600000
-  max_llm_calls: 120
-  max_wall_clock_s: 1500
+budgets:                       # per issue
+  max_total_tokens: 120000       # hard cap: the run stops (status budget_exhausted)
+  soft_total_tokens: 45000       # beyond this, no new fix attempts are started
+  max_llm_calls: 45
+  max_wall_clock_s: 900
 phases:
   localize_max_steps: 15
   reproduce_max_steps: 10
@@ -39,7 +40,7 @@ context:
   keep_recent_messages: 8
 tests:
   command: null                 # override auto-detection, e.g. "python3 -m pytest -q"
-  baseline_timeout_s: 600
+  baseline_timeout_s: 300
   targeted_timeout_s: 180
   run_full_suite_after_fix: true
 safety:

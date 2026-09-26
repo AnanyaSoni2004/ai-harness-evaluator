@@ -163,7 +163,10 @@ def render_report(state: RunState, diff: str, metrics: Metrics) -> str:
              f"- **Root cause:** {loc.get('root_cause') or '(not determined)'}",
              f"- **Files changed:** {', '.join(f'`{f}`' for f in (attempt or {}).get('files', [])) if kept else 'none'}",
              f"- **Fix summary:** {(attempt or {}).get('summary') or '(none)'}" if kept else "- **Fix summary:** none",
-             f"- **Attempts:** {len(state.attempts)}", ""]
+             f"- **Attempts:** {len(state.attempts)}"]
+    if state.stop_reason:
+        lines.append(f"- **Stopped early:** {state.stop_reason} (no further fix attempts were started)")
+    lines.append("")
     lines += evidence_section(state, attempt, kept)
     lines += fault_localization_section(state, diff)
     lines += efficiency_section(metrics)

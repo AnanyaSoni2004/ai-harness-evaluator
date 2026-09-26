@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import hashlib
 import json
 import re
 import tempfile
@@ -266,9 +267,11 @@ class Orchestrator:
             max_attempts = self.cfg.phases.max_fix_attempts if kind == "fix" else n
             res = self._agent("fix", None, FIX_FINISH, prompts.fix_task(self.state, n, feedback, max_attempts),
                               self.cfg.phases.fix_max_steps)
+        diff = self.ws.diff()
         record: dict = {"attempt": n, "kind": kind, "finished": res.finished, "reason": res.reason,
                         "summary": str(res.result.get("summary") or res.result.get("text") or "")[:1000],
-                        "files": self.ws.edited_files(), "diff": self.ws.diff(), "passed": False}
+                        "files": self.ws.edited_files(), "diff": diff, "passed": False,
+                        "diff_hash": hashlib.sha256(diff.encode()).hexdigest()[:12] if diff else ""}
         self.state.attempts.append(record)
         if not record["diff"]:
             record["reason"] = record["reason"] or "no_changes"
@@ -284,16 +287,44 @@ class Orchestrator:
             return True, ""
         return False, "Reviewer requested changes:\n- " + "\n- ".join(record["review"]["problems"])
 
+    def _abandon_reason(self) -> str | None:
+        """Why no further fix attempt should start (checked before attempt 2+ and the rescue)."""
+        soft = int(getattr(self.cfg.budgets, "soft_total_tokens", 0) or 0)
+        if soft and self.metrics.total_tokens >= soft:
+            return f"soft token budget reached ({self.metrics.total_tokens} >= {soft} tokens)"
+        if self._remaining() <= 0:
+            return "wall-clock budget exhausted"
+        tried = self.state.attempts
+        if len(tried) >= 2:
+            a, b = tried[-2], tried[-1]
+            if not a.get("diff") and not b.get("diff"):
+                return "two consecutive fix attempts produced no changes"
+            if a.get("diff_hash") and a.get("diff_hash") == b.get("diff_hash"):
+                return "two consecutive fix attempts produced the same diff"
+        if sum(1 for a in tried if a.get("reason") == "no_tool_calls") >= 2:
+            return "two fix attempts ended without any tool call"
+        return None
+
+    def _stop_early(self, reason: str) -> None:
+        self.state.stop_reason = reason
+        self._note(f"stopped early: {reason}")
+
     def _fix_loop(self) -> bool:
         feedback = ""
         for n in range(1, self.cfg.phases.max_fix_attempts + 1):
-            if self._remaining() <= 0:
-                self._note("fix: wall-clock budget exhausted")
+            reason = self._abandon_reason() if n > 1 else (
+                "wall-clock budget exhausted" if self._remaining() <= 0 else None)
+            if reason:
+                self._stop_early(reason)
                 return False
             ok, feedback = self._attempt(n, "fix", feedback)
             if ok:
                 return True
-        if self.cfg.phases.enable_rescue and self._remaining() > 0:
+        reason = self._abandon_reason()
+        if reason and self.cfg.phases.enable_rescue:
+            self._stop_early(reason)
+            return False
+        if self.cfg.phases.enable_rescue:
             self.ws.revert_all()
             lines = []
             for a in self.state.attempts:

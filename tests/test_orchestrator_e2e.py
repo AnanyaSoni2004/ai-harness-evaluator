@@ -123,9 +123,11 @@ def test_e2e_failure_path_keeps_repo_clean(repo: Path, cfg) -> None:
     original = snapshot_tree(repo)
     breaks_count = call("str_replace", path="toolkit/inventory.py", old_str="return self._stock.get(item, 0)",
                         new_str="return self._stock.get(item, 1)")
+    breaks_more = call("str_replace", path="toolkit/inventory.py", old_str="return self._stock.get(item, 1)",
+                       new_str="return self._stock.get(item, 2)")
     script = up_to_fix() + [
         r(breaks_count), r(call("finish", summary="changed count")),        # attempt 1: breaks another test
-        r(call("finish", summary="not sure")),                                # attempt 2: no further change
+        r(breaks_more), r(call("finish", summary="tried again")),           # attempt 2: a different wrong diff
         r(call("finish", summary="still not sure")),                          # rescue: clean slate, no change
     ]
     llm = FakeLLM(script)

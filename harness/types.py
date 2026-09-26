@@ -251,6 +251,7 @@ class RunState:
     status: str = "running"
     notes: list[str] = field(default_factory=list)
     spectrum: dict = field(default_factory=dict)
+    stop_reason: str = ""  # why further fix attempts were abandoned (a normal outcome, not an error)
 
     def to_dict(self) -> dict:
         """JSON-serialisable view of the whole state."""
