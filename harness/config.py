@@ -92,6 +92,24 @@ class OutputConfig:
     workspaces_dir: str | None = None
 
 
+SPECTRUM_FORMULAS = ("ochiai", "tarantula")
+
+
+@dataclass
+class SpectrumConfig:
+    """Execution-based fault localization (the Tracer)."""
+
+    enabled: bool = True
+    formula: str = "ochiai"
+    timeout_s: float = 120
+    repro_timeout_s: float = 60
+    min_passing_runs: int = 3
+    max_passing_tests: int = 60
+    top_lines: int = 10
+    top_functions: int = 5
+    max_evidence_chars: int = 5000
+
+
 @dataclass
 class Config:
     """Complete harness configuration."""
@@ -103,6 +121,7 @@ class Config:
     tests: TestsConfig = field(default_factory=TestsConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    spectrum: SpectrumConfig = field(default_factory=SpectrumConfig)
 
     def api_key(self) -> str:
         """Return AI_API_KEY from the environment, or raise HarnessError if it is unset."""
@@ -157,6 +176,8 @@ def _apply_env_overrides(cfg: Config) -> None:
         cfg.model.api_base = os.environ["HARNESS_API_BASE"]
     if os.environ.get("HARNESS_TOOL_MODE"):
         cfg.model.tool_mode = os.environ["HARNESS_TOOL_MODE"]
+    if os.environ.get("HARNESS_SPECTRUM", "").strip().lower() in ("0", "false", "no", "off"):
+        cfg.spectrum.enabled = False
 
 
 CHARS_PER_TOKEN = 3.5
@@ -168,6 +189,8 @@ def derive_context_budgets(cfg: Config) -> None:
     cfg.context.working_budget_tokens = min(int(cfg.context.working_budget_tokens), int(window * 0.55))
     cfg.context.max_tool_output_chars = min(int(cfg.context.max_tool_output_chars),
                                             int(window * 0.06 * CHARS_PER_TOKEN))
+    cfg.spectrum.max_evidence_chars = min(int(cfg.spectrum.max_evidence_chars),
+                                          int(window * 0.04 * CHARS_PER_TOKEN))
 
 
 def load_config(path: str | None = None) -> Config:
@@ -199,6 +222,10 @@ def load_config(path: str | None = None) -> Config:
     if cfg.model.tool_mode not in TOOL_MODES:
         warnings.warn(f"config: model.tool_mode '{cfg.model.tool_mode}' is invalid; using 'auto'")
         cfg.model.tool_mode = "auto"
+    if str(cfg.spectrum.formula).lower() not in SPECTRUM_FORMULAS:
+        warnings.warn(f"config: spectrum.formula '{cfg.spectrum.formula}' is unknown; using 'ochiai'")
+        cfg.spectrum.formula = "ochiai"
+    cfg.spectrum.formula = str(cfg.spectrum.formula).lower()
     forced = cfg.model.force_text_mode_for
     if forced is None:
         cfg.model.force_text_mode_for = []

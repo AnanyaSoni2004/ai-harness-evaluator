@@ -199,6 +199,29 @@ class Metrics:
         }
 
 
+@dataclass
+class SpectrumResult:
+    """Outcome of execution-based fault localization (the Tracer).
+
+    lines items: {"path", "line", "score", "ef", "ep", "function"}.
+    functions items: {"path", "name", "start", "end", "score", "top_line", "ef", "ep"}.
+    """
+
+    ok: bool
+    reason: str = ""
+    formula: str = "ochiai"
+    lines: list[dict] = field(default_factory=list)
+    functions: list[dict] = field(default_factory=list)
+    failing_runs: int = 0
+    passing_runs: int = 0
+    seconds: float = 0.0
+    low_confidence: bool = False
+
+    def to_dict(self) -> dict:
+        """JSON-serialisable view."""
+        return asdict(self)
+
+
 def _jsonable(value: Any) -> Any:
     """Recursively convert Paths (and nested containers) into JSON-friendly values."""
     if isinstance(value, Path):
@@ -227,6 +250,7 @@ class RunState:
     review: dict = field(default_factory=dict)
     status: str = "running"
     notes: list[str] = field(default_factory=list)
+    spectrum: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """JSON-serialisable view of the whole state."""

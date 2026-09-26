@@ -7,7 +7,7 @@ import pytest
 from harness.config import Config, load_config
 from harness.types import HarnessError
 
-ENV_VARS = ("HARNESS_MODEL", "HARNESS_API_BASE", "HARNESS_TOOL_MODE")
+ENV_VARS = ("HARNESS_MODEL", "HARNESS_API_BASE", "HARNESS_TOOL_MODE", "HARNESS_SPECTRUM")
 
 
 @pytest.fixture(autouse=True)
@@ -116,3 +116,31 @@ def test_max_consecutive_parse_failures(tmp_path: Path) -> None:
     assert load_config().model.max_consecutive_parse_failures == 3
     cfg = load_config(_write(tmp_path, "model:\n  max_consecutive_parse_failures: 5\n"))
     assert cfg.model.max_consecutive_parse_failures == 5
+
+
+def test_spectrum_defaults_and_partial(tmp_path: Path) -> None:
+    cfg = load_config()
+    assert cfg.spectrum.enabled and cfg.spectrum.formula == "ochiai" and cfg.spectrum.min_passing_runs == 3
+    partial = load_config(_write(tmp_path, "spectrum:\n  formula: TARANTULA\n  top_lines: 4\n"))
+    assert partial.spectrum.formula == "tarantula" and partial.spectrum.top_lines == 4
+    assert partial.spectrum.timeout_s == 120
+
+
+def test_spectrum_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HARNESS_SPECTRUM", "0")
+    assert load_config(_write(tmp_path, "spectrum:\n  enabled: true\n")).spectrum.enabled is False
+    monkeypatch.setenv("HARNESS_SPECTRUM", "1")
+    assert load_config(_write(tmp_path, "")).spectrum.enabled is True
+
+
+def test_spectrum_bad_formula(tmp_path: Path) -> None:
+    with pytest.warns(UserWarning, match="spectrum.formula"):
+        cfg = load_config(_write(tmp_path, "spectrum:\n  formula: magic\n"))
+    assert cfg.spectrum.formula == "ochiai"
+
+
+def test_spectrum_evidence_clamped_to_context(tmp_path: Path) -> None:
+    small = load_config(_write(tmp_path, "model:\n  context_window: 32768\n"))
+    assert small.spectrum.max_evidence_chars == int(32768 * 0.04 * 3.5) == 4587
+    big = load_config(_write(tmp_path, "model:\n  context_window: 200000\n"))
+    assert big.spectrum.max_evidence_chars == 5000

@@ -92,3 +92,18 @@ def test_exception_hierarchy() -> None:
         assert issubclass(exc, HarnessError)
     with pytest.raises(HarnessError):
         raise BudgetExceeded("tokens")
+
+
+def test_spectrum_result_round_trip() -> None:
+    from harness.types import SpectrumResult
+
+    res = SpectrumResult(ok=True, lines=[{"path": "a.py", "line": 3, "score": 1.0, "ef": 1, "ep": 0,
+                                          "function": "f"}],
+                         functions=[{"path": "a.py", "name": "f", "start": 1, "end": 4, "score": 1.0,
+                                     "top_line": 3, "ef": 1, "ep": 0}], failing_runs=1, passing_runs=4)
+    assert json.loads(json.dumps(res.to_dict())) == res.to_dict()
+    assert SpectrumResult(ok=False, reason="no reproduction").to_dict()["lines"] == []
+    state = RunState(run_id="r", repo="/x", issue=IssueSpec(raw_text="x"))
+    state.spectrum = res.to_dict()
+    assert state.to_dict()["spectrum"]["functions"][0]["name"] == "f"
+    assert RunState(run_id="r", repo="/x", issue=IssueSpec(raw_text="x")).to_dict()["spectrum"] == {}

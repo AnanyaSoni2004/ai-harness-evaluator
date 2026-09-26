@@ -48,3 +48,13 @@ safety:
 output:
   runs_dir: runs
   workspaces_dir: null          # null = <system temp>/ai-harness-workspaces (must be OUTSIDE this project)
+spectrum:                        # Tracer: execution-based fault localization (see NOTES.md)
+  enabled: true
+  formula: ochiai            # ochiai | tarantula
+  timeout_s: 120             # total budget for all traced runs
+  repro_timeout_s: 60        # sub-budget so a slow repro cannot starve the passing runs
+  min_passing_runs: 3        # below this -> ok=False (no contrast, everything ties)
+  max_passing_tests: 60      # tracing is 2-10x slower than normal execution; keep this modest
+  top_lines: 10              # lines shown to the FIX agent
+  top_functions: 5
+  max_evidence_chars: 5000   # capped again at runtime against the model's context window

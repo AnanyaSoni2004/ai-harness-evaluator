@@ -51,7 +51,7 @@ class Recorder:
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.setenv("AI_API_KEY", FAKE_KEY)
-    for name in ("HARNESS_MODEL", "HARNESS_API_BASE", "HARNESS_TOOL_MODE"):
+    for name in ("HARNESS_MODEL", "HARNESS_API_BASE", "HARNESS_TOOL_MODE", "HARNESS_SPECTRUM"):
         monkeypatch.delenv(name, raising=False)
     llm_mod._TOOL_MODE_CACHE.clear()
     llm_mod._DROPPED_PARAMS.clear()
