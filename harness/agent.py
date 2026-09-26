@@ -153,8 +153,10 @@ class AgentLoop:
             self.metrics.add_tool(self.phase)
             self.trajectory.log("phase_finish", phase=self.phase, result=call.arguments, steps=self.steps)
             return PhaseResult(self.phase, True, dict(call.arguments), self.steps)
-        if call is None:
-            result = ToolResult(False, "The API rejected your tool call. Call exactly one of the available tools.")
+        if call is None or call.name == textproto.INVALID_TOOL:
+            reason = f" ({call.parse_error})" if call is not None and call.parse_error else ""
+            result = ToolResult(False, f"The API could not use your last reply{reason}. Call exactly one of the "
+                                       "available tools, with valid JSON arguments.")
         elif call.name == FINISH:
             result = ToolResult(False, self._finish_problem(call) or f"Invalid finish call: {call.parse_error}")
         else:

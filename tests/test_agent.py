@@ -289,3 +289,13 @@ def test_repeated_rejections_end_with_protocol_failure(ws, cfg) -> None:
     loop, _ = read_only_loop(ws, cfg, [rejected("str_replace", path="a.py") for _ in range(3)])
     result = loop.run()
     assert not result.finished and result.reason == "protocol_failure" and result.steps == 3
+
+
+def test_unparseable_rejected_reply_gets_native_friendly_feedback(ws, cfg) -> None:
+    garbled = LLMResponse("Search tests for remove error.",
+                          [ToolCall("x", "__invalid__", {}, "the API could not use your reply as a tool call")],
+                          Usage(0, 0), "tool_use_failed")
+    loop, llm = read_only_loop(ws, cfg, [garbled, resp(call("finish", summary="ok"))])
+    assert loop.run().finished
+    feedback = llm.calls[1][-1]["content"]
+    assert "could not use your last reply" in feedback and "```tool" not in feedback

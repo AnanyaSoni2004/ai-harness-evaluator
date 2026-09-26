@@ -391,10 +391,21 @@ def test_rejected_tool_call_without_generation(monkeypatch):
     body = 'GroqException - {"error": {"message": "Failed to call a function.", "code": "tool_use_failed"}}'
     bad = litellm.BadRequestError(message=body, model="m", llm_provider="groq")
     resp = make_client(monkeypatch, Recorder(bad)).complete([], [llm_mod.PING_TOOL], "fix")
-    assert resp.tool_calls[0].name == "__invalid__" and "rejected" in resp.tool_calls[0].parse_error
+    assert resp.tool_calls[0].name == "__invalid__" and "could not use your reply" in resp.tool_calls[0].parse_error
 
 
 def test_probe_treats_tool_use_failed_as_text(monkeypatch):
     bad = litellm.BadRequestError(message=TOOL_USE_FAILED, model="m", llm_provider="groq")
     client = make_client(monkeypatch, Recorder(bad), tool_mode="auto")
     assert client.tool_mode == "text" and "tool_use_failed" in client.probe_info["reason"]
+
+
+def test_output_parse_failed_is_also_feedback(monkeypatch):
+    body = ('GroqException - ' + json.dumps({"error": {
+        "message": "Parsing failed. The model generated output that could not be parsed.",
+        "type": "invalid_request_error", "code": "output_parse_failed",
+        "failed_generation": "Search tests for remove error."}}))
+    bad = litellm.BadRequestError(message=body, model="m", llm_provider="groq")
+    resp = make_client(monkeypatch, Recorder(bad)).complete([], [llm_mod.PING_TOOL], "localize")
+    assert resp.finish_reason == "tool_use_failed" and resp.text == "Search tests for remove error."
+    assert resp.tool_calls[0].name == "__invalid__" and "could not use your reply" in resp.tool_calls[0].parse_error

@@ -50,8 +50,12 @@ MIN_MAX_TOKENS = 256
 _MAX_TOKENS_CAP: dict[str, int] = {}  # model name -> max_tokens learned from "Request too large" errors
 
 
+# Provider rejected what the model generated (Groq: tool_use_failed, output_parse_failed, ... + failed_generation).
+_REJECTED_GENERATION = re.compile(r"tool_use_failed|output_parse_failed|failed_generation")
+
+
 class ToolUseFailed(Exception):
-    """The provider rejected the model's own tool call (Groq: HTTP 400 `tool_use_failed`)."""
+    """The provider rejected the model's own output or tool call (Groq HTTP 400 with `failed_generation`)."""
 
     def __init__(self, generation: str, message: str) -> None:
         super().__init__(message)
@@ -250,7 +254,7 @@ class LLMClient:
             except AUTH_ERRORS as e:
                 raise FatalLLMError(AUTH_MESSAGE) from e
             except BAD_REQUEST as e:
-                if "tool_use_failed" in str(e):
+                if _REJECTED_GENERATION.search(str(e)):
                     raise ToolUseFailed(_failed_generation(e), _provider_message(e)) from e
                 param = _rejected_param(str(e), kwargs)
                 if param is None:
@@ -303,7 +307,7 @@ class LLMClient:
         calls = textproto.parse_tool_calls(error.generation, f"call{self._n_calls}")
         if not calls:
             calls = [ToolCall(f"call{self._n_calls}_0", textproto.INVALID_TOOL, {},
-                              parse_error=f"the API rejected your tool call ({error})")]
+                              parse_error=f"the API could not use your reply as a tool call ({error})")]
         usage = Usage()  # the provider reports no usage for rejected calls
         self.metrics.add_llm(phase, usage)
         self.trajectory.log("llm_tool_use_failed", phase=phase, message=str(error)[:300],
