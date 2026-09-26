@@ -1,0 +1,4 @@
+litellm==1.102.1
+pytest==9.1.1
+PyYAML==6.0.3
+rich==15.0.0
