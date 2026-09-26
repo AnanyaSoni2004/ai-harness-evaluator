@@ -64,8 +64,7 @@ def localize_and_reproduce(reproduced: bool = True) -> list:
 def test_happy_path_verified(repo: Path, cfg, tmp_path: Path) -> None:
     script = localize_and_reproduce() + [
         r(call("str_replace", path="calc.py", old_str="return a - b", new_str="return a + b")),
-        r(call("finish", summary="add now adds")),
-        js({"verdict": "approve", "problems": [], "confidence": "high"})]
+        r(call("finish", summary="add now adds"))]  # unambiguous verification: no REVIEW call
     llm = FakeLLM(script)
     state, run_dir = Orchestrator(cfg, llm, python_exe=PY).solve(repo, "add(1, 2) returns -1 instead of 3")
     assert state.status == "verified", state.notes
@@ -75,14 +74,16 @@ def test_happy_path_verified(repo: Path, cfg, tmp_path: Path) -> None:
     assert attempt["passed"] and attempt["verification"]["repro_after_exit"] == 0
     assert attempt["verification"]["new_failures"] == []  # the pre-existing failure is not "new"
     assert "tests/test_legacy.py::test_known_broken" in state.baseline_full.failing_ids
-    assert state.targeted_tests == ["tests/test_calc.py"] and state.review["verdict"] == "approve"
+    assert state.targeted_tests == ["tests/test_calc.py"] and state.review["verdict"] == "skipped"
+    assert "skipped: verification was unambiguous" in (run_dir / "report.md").read_text()
     assert run_dir.parent == tmp_path / "runs" and run_dir.name.endswith("add-1-2-returns-1")
     assert "+    return a + b" in (run_dir / "patch.diff").read_text()
     saved = json.loads((run_dir / "state.json").read_text())
     assert saved["status"] == "verified" and "snapshot" not in saved["attempts"][0]
     events = [json.loads(l)["event"] for l in (run_dir / "trajectory.jsonl").read_text().splitlines()]
     assert events[0] == "run_start" and events[-1] == "run_end"
-    assert {"intake", "localize", "reproduce", "fix", "verify", "review"} <= set(llm.metrics.per_phase)
+    assert {"intake", "localize", "reproduce", "fix", "verify"} <= set(llm.metrics.per_phase)
+    assert "review" not in llm.metrics.per_phase
     assert llm.metrics.per_phase["verify"].llm_calls == 0  # VERIFY never calls the model
     assert llm.script == []  # every scripted reply was used
 
@@ -146,3 +147,22 @@ def test_key_echoed_in_errors_never_reaches_artefacts_or_screen(repo: Path, cfg,
     assert "***" in (run_dir / "state.json").read_text()
     out = capsys.readouterr().out
     assert key not in out and "Incorrect API key provided: ***" in out
+
+
+# ---------------------------------------------------------------- (b) REVIEW only when verification is ambiguous
+@pytest.mark.parametrize("change, reason", [
+    (lambda o, v: o.state.repro.update(reproduced=False), "the bug was not reproduced"),
+    (lambda o, v: v.pop("full_after"), "the full test suite did not run"),
+    (lambda o, v: v.update(new_failures=["t::x"]), "new test failures appeared"),
+    (lambda o, v: None, "the patch touches more than 3 files"),
+])
+def test_review_needed_triggers(change, reason) -> None:
+    from harness.types import IssueSpec, RunState
+    orch = Orchestrator(load_config(), FakeLLM([]))
+    orch.state = RunState(run_id="r", repo="/x", issue=IssueSpec(raw_text="x"))
+    orch.state.repro = {"reproduced": True}
+    v = {"full_after": object(), "new_failures": []}
+    files = ["a.py"] * (4 if reason.startswith("the patch") else 1)
+    assert orch._review_needed(dict(v), ["a.py"]) is None  # unambiguous -> no REVIEW call
+    change(orch, v)
+    assert orch._review_needed(v, files) == reason

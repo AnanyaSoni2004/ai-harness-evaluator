@@ -156,17 +156,18 @@ TOOL_SCHEMAS: dict[str, tuple[str, str, dict]] = {
         "pattern": _s("Glob pattern, e.g. '*.py' or 'src/**/test_*.py'."),
     }, ["pattern"])),
     "search_code": ("read", "Search file contents (literal by default; set regex=true for a regex). "
-                            "Returns path:line: text.", _obj({
+                            "Returns up to 25 matches with 3 lines of context.", _obj({
         "query": _s("Text (or regex) to search for."),
         "regex": {"type": "boolean", "description": "Treat query as a regular expression (default false)."},
         "path": _s("File or directory to search (default '.')."),
         "file_glob": _s("Only search files matching this glob, e.g. '*.py'."),
     }, ["query"])),
-    "view_file": ("read", "Show a file with line numbers, max 250 lines per call. Use start_line/end_line to page.",
+    "view_file": ("read", "Show a file with line numbers (80 lines by default, max 200). Without start_line, "
+                          "long files show an outline plus the first 40 lines.",
                   _obj({
                       "path": _s("File path relative to the repository root, or @scratch/<name>."),
                       "start_line": _i("First line to show (default 1)."),
-                      "end_line": _i("Last line to show (default: start_line + 249)."),
+                      "end_line": _i("Last line to show (default: start_line + 79)."),
                   }, ["path"])),
     "repo_map": ("read", "Outline of classes and functions (with line numbers) for a file or directory.", _obj({
         "path": _s("File or directory (default '.')."),

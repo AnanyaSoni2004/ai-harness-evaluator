@@ -77,6 +77,8 @@ def evidence_rows(state: RunState, attempt: dict) -> list[tuple[str, str, str]]:
     else:
         repro_row = ("Reproduction", "not reproduced", str(repro.get("observed") or "n/a"))
     verdict = str(review.get("verdict", "not run")) + (f" ({review['confidence']})" if review.get("confidence") else "")
+    if review.get("verdict") == "skipped":
+        verdict = f"skipped: {review.get('reason', 'not needed')}"
     return [repro_row,
             (f"Targeted tests ({len(state.targeted_tests)} file(s))", _counts(v.get("targeted_before")),
              _counts(v.get("targeted_after"))),

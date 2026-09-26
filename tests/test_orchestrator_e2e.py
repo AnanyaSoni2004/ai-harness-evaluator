@@ -93,8 +93,7 @@ def test_e2e_verified_fix(repo: Path, cfg) -> None:
         r(call("create_file", path="tests/test_inventory_regression.py", content=REGRESSION_TEST)),
         r(call("finish", summary="remove() raises ValueError('insufficient stock') instead of going negative.",
                files_changed=["toolkit/inventory.py"], tests_added=["tests/test_inventory_regression.py"])),
-        js({"verdict": "approve", "problems": [], "confidence": "high"}),
-    ]
+    ]  # reproduced + fixed, full suite ran, no new failures, 2 files: REVIEW is skipped
     llm = FakeLLM(script)
     state, run_dir = Orchestrator(cfg, llm, python_exe=PY).solve(repo, ISSUE)
 
@@ -114,6 +113,7 @@ def test_e2e_verified_fix(repo: Path, cfg) -> None:
     assert "+++ b/tests/test_inventory_regression.py" in patch
     report = (run_dir / "report.md").read_text()
     assert "VERIFIED" in report and PRE_EXISTING not in report.split("New failures", 1)[1].split("\n", 1)[0]
+    assert state.review["verdict"] == "skipped" and "| Review verdict | — | skipped: verification was unambiguous" in report
     assert {"metrics.json", "state.json", "trajectory.jsonl"} <= {p.name for p in run_dir.iterdir()}
     assert run_hidden_test(repo) == 0  # the grader's hidden test passes on the result
 
@@ -148,6 +148,7 @@ def test_e2e_failure_path_keeps_repo_clean(repo: Path, cfg) -> None:
 
 
 def test_e2e_reviewer_revise_then_approve(repo: Path, cfg) -> None:
+    cfg.tests.run_full_suite_after_fix = False  # ambiguous verification (no full-suite run), so REVIEW runs
     partial = FIXED.replace('raise ValueError("insufficient stock")', "raise ValueError('nope')")
     script = up_to_fix() + [
         r(call("str_replace", path="toolkit/inventory.py", old_str=BUGGY, new_str=partial)),
@@ -195,3 +196,18 @@ def test_fix_phase_knows_pre_existing_failures(repo: Path, cfg) -> None:
     run_tests_output = next(m["content"] for msgs in llm.calls for m in msgs
                             if m.get("role") == "tool" and m.get("name") == "run_tests")
     assert f"{PRE_EXISTING} (already failing before your change" in run_tests_output
+
+
+def test_traceback_issue_skips_localize(repo: Path, cfg) -> None:
+    """Issue 03 carries a traceback naming toolkit/durations.py: LOCALIZE costs zero model calls."""
+    issue = (FIXTURES / "issues" / "03_durations.md").read_text()
+    script = [js({"title": "combined durations", "summary": "parse_duration('1h30m') raises."}),
+              r(call("finish", reproduced=False, command="", observed="skipped")),  # REPRODUCE
+              r(call("finish", summary="looked"))]                                    # FIX (no change)
+    cfg.phases.max_fix_attempts, cfg.phases.enable_rescue = 1, False
+    llm = FakeLLM(script)
+    state, _ = Orchestrator(cfg, llm, python_exe=PY).solve(repo, issue)
+    assert state.localization["files"] == ["toolkit/durations.py"] and state.localization["source"] == "traceback"
+    assert llm.metrics.per_phase["localize"].llm_calls == 0 and llm.script == []
+    assert state.targeted_tests == ["tests/test_durations.py"]
+    assert any("localize: skipped; the traceback names toolkit/durations.py" in n for n in state.notes)

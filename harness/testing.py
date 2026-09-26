@@ -7,10 +7,11 @@ import shlex
 import sys
 from typing import Any
 
-from harness.shell import run_process, truncate
+from harness.shell import run_process
 from harness.types import TestRun, ToolResult
 
 OUTPUT_TAIL_CHARS = 4000
+FAILURE_TAIL_LINES = 25
 PROBE_TIMEOUT_S = 30.0
 PYTEST_FLAGS = "-m pytest -q -rfE -p no:cacheprovider"
 
@@ -236,8 +237,9 @@ class TestRunner:
             new = [t for t in run.failing_ids if t not in self.known_failures]
             if self.known_failures and not new:
                 lines.append("No NEW failures: every failing test was already failing before your change.")
-        max_chars = int(_cfg(self.cfg, "context", "max_tool_output_chars", 8000))
-        lines.append(truncate(run.output_tail, max(500, max_chars - 1000)))
         ok = run.exit_code in (0, 5) and not run.timed_out
+        if not ok:  # only what the agent needs: the failing IDs above and the end of the output
+            tail = [line for line in run.output_tail.splitlines() if line.strip()][-FAILURE_TAIL_LINES:]
+            lines.append("\n".join(tail))
         return ToolResult(ok, "\n".join(lines).rstrip(),
                           {"passed": run.passed, "failed": run.failed, "failing_ids": run.failing_ids})

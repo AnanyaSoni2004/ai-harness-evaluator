@@ -16,7 +16,7 @@ from typing import Any, Iterator
 from harness import prompts, report
 from harness.agent import AgentLoop
 from harness.events import NullUI, Trajectory, redact
-from harness.localize import extract_terms, rank_files, related_tests
+from harness.localize import extract_terms, localize_from_traceback, rank_files, related_tests
 from harness.repomap import build_repo_map
 from harness.spectrum import SpectrumAnalyzer, format_suspicious
 from harness.testing import TestRunner, compare
@@ -47,6 +47,12 @@ def _strs(value: Any) -> list[str]:
     if isinstance(value, str):
         value = [value]
     return [str(v).strip() for v in (value or []) if str(v).strip()] if isinstance(value, list) else []
+
+
+def _last_lines(text: str, n: int = 25) -> str:
+    """The last n non-empty lines (test failures are at the end)."""
+    lines = [line for line in str(text or "").splitlines() if line.strip()]
+    return "\n".join(lines[-n:])
 
 
 def _slug(text: str) -> str:
@@ -136,6 +142,15 @@ class Orchestrator:
             return build_repo_map(self.ws, [c["path"] for c in self.state.candidates[:5]])
 
     def _localize(self, repo_map_text: str) -> None:
+        from_trace = localize_from_traceback(self.ws, self.state.issue.raw_text)
+        if from_trace is not None:
+            with self._timed("localize", "from the issue's traceback (no LLM)"):
+                self.state.localization = from_trace
+                self._note(f"localize: skipped; the traceback names {', '.join(from_trace['files'])}")
+                self.state.targeted_tests = related_tests(self.ws, from_trace["files"])
+                if self.state.targeted_tests:
+                    self.state.baseline_targeted = self.runner.run(self.state.targeted_tests)
+            return
         with self._timed("localize", "finding the root cause"):
             self.ws.write_scope = "none"
             steps = self.cfg.phases.localize_max_steps
@@ -236,12 +251,24 @@ class Orchestrator:
         parts = []
         if v.get("repro_passed") is False:
             parts.append(f"The reproduction still fails (exit {v.get('repro_after_exit')}):\n"
-                         f"{v.get('repro_after_tail', '')}")
+                         f"{_last_lines(v.get('repro_after_tail', ''))}")
         if v["new_failures"]:
             tails = [getattr(v.get(k), "output_tail", "") for k in ("targeted_after", "full_after")]
             parts.append("New failing tests (they passed before your change): " + ", ".join(v["new_failures"]) +
-                         "\n" + next((t for t in tails if t), "")[-TAIL:])
+                         "\n" + _last_lines(next((t for t in tails if t), "")))
         return "\n\n".join(parts) or "Verification failed."
+
+    def _review_needed(self, v: dict, files: list[str]) -> str | None:
+        """Why the verification is ambiguous enough to ask the reviewer, or None to skip the call."""
+        if not self.state.repro.get("reproduced"):
+            return "the bug was not reproduced"
+        if v.get("full_after") is None:
+            return "the full test suite did not run"
+        if v.get("new_failures"):
+            return "new test failures appeared"
+        if len(files) > 3:
+            return "the patch touches more than 3 files"
+        return None
 
     def _review(self, v: dict) -> dict:
         with self._timed("review", "critic checks the patch"):
@@ -282,6 +309,13 @@ class Orchestrator:
             return False, self._feedback(v)
         if not self.cfg.phases.enable_review:
             return True, ""
+        why = self._review_needed(v, record["files"])
+        if why is None:
+            record["review"] = self.state.review = {
+                "verdict": "skipped", "problems": [], "confidence": "",
+                "reason": "verification was unambiguous (bug reproduced and fixed, full suite ran, no new failures)"}
+            return True, ""
+        self.trajectory.log("review_needed", reason=why)
         record["review"] = self.state.review = self._review(v)
         if record["review"]["verdict"] == "approve":
             return True, ""

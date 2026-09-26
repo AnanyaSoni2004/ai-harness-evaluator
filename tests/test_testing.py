@@ -226,3 +226,15 @@ def test_run_tests_tool_labels_pre_existing_failures(tiny: Workspace) -> None:
     runner.known_failures = set()
     out = runner.run_tests_tool("tests/test_calc.py").output
     assert "already failing" not in out and "No NEW failures" not in out
+
+
+def test_run_tests_tool_failure_output_is_ids_plus_last_25_lines(tiny: Workspace) -> None:
+    (tiny.repo_root / "tests" / "test_noisy.py").write_text(
+        "def test_noisy():\n" + "".join(f"    print('noise {i}')\n" for i in range(200)) + "    assert False\n")
+    runner = TestRunner(tiny, None, python_exe=PY)
+    out = runner.run_tests_tool("tests/test_noisy.py").output.splitlines()
+    assert out[0].startswith("$ ") and out[1].startswith("0 passed, 1 failed")
+    assert out[2] == "Failing: tests/test_noisy.py::test_noisy"
+    assert len(out) <= 3 + 25
+    ok = runner.run_tests_tool("tests/test_other.py").output.splitlines()
+    assert len(ok) == 2 and ok[1].startswith("1 passed, 0 failed")  # success: no output dump at all

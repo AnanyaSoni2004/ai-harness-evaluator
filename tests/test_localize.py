@@ -94,3 +94,32 @@ def test_related_tests(ws: Workspace) -> None:
     assert related_tests(ws, ["toolkit/__init__.py"])  # package-level import resolves via the package name
     assert related_tests(ws, ["toolkit/inventory.py"], limit=1) == ["tests/test_inventory.py"]
     assert related_tests(ws, []) == []
+
+
+# ---------------------------------------------------------------- (a) localization from a traceback, zero tokens
+import shutil  # noqa: E402
+
+from harness.localize import localize_from_traceback  # noqa: E402
+
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+
+
+def sample(tmp_path: Path) -> Workspace:
+    shutil.copytree(FIXTURES / "sample_repo", tmp_path / "repo")
+    return Workspace(tmp_path / "repo", tmp_path / "scratch")
+
+
+def test_traceback_localizes_the_innermost_repo_frame(tmp_path: Path) -> None:
+    ws = sample(tmp_path)
+    loc = localize_from_traceback(ws, (FIXTURES / "issues" / "03_durations.md").read_text())
+    assert loc["files"] == ["toolkit/durations.py"] and loc["symbols"] == ["parse_duration"]
+    assert loc["source"] == "traceback" and "toolkit/durations.py:12 in parse_duration" in loc["root_cause"]
+
+
+def test_traceback_without_repo_frames_is_ignored(tmp_path: Path) -> None:
+    ws = sample(tmp_path)
+    assert localize_from_traceback(ws, "no traceback here") is None
+    stdlib_only = 'Traceback (most recent call last):\n  File "/usr/lib/python3.12/json/decoder.py", line 3, in decode\n'
+    assert localize_from_traceback(ws, stdlib_only) is None
+    tests_only = '  File "/ci/checkout/tests/test_paging.py", line 5, in test_first_page\n'
+    assert localize_from_traceback(ws, tests_only) is None  # a failing test is a symptom, not the location

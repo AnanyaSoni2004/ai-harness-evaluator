@@ -17,9 +17,12 @@ from harness.workspace import IGNORED_DIRS, Workspace
 MAX_LIST_ENTRIES = 300
 MAX_LIST_DEPTH = 4
 MAX_FIND_RESULTS = 100
-MAX_SEARCH_MATCHES = 50
+MAX_SEARCH_MATCHES = 25
+SEARCH_CONTEXT_LINES = 3
 MAX_MATCH_TEXT = 200
-MAX_VIEW_LINES = 250
+MAX_VIEW_LINES = 200          # hard cap per call
+DEFAULT_VIEW_LINES = 80       # window when end_line is not given
+PREVIEW_LINES = 40            # long file, no start_line: outline + this many lines
 MAX_LINE_CHARS = 400
 SEARCH_TIMEOUT_S = 30.0
 
@@ -128,19 +131,39 @@ def find_files(ws: Workspace, cfg: Any, pattern: str = "") -> ToolResult:
 
 
 # ---------------------------------------------------------------------- search_code
-def _format_matches(matches: list[tuple[str, int, str]], total: int, query: str) -> ToolResult:
-    """Render search hits as 'path:line: text' with the 50-match cap."""
+def _format_matches(ws: Workspace, matches: list[tuple[str, int, str]], total: int, query: str) -> ToolResult:
+    """Render up to 25 hits, each with 3 lines of context (overlapping windows merged), plus a narrowing hint."""
     if total == 0:
         return ToolResult(True, f"No matches for '{query}'. Try a shorter or different term.", {"count": 0})
-    lines = []
-    for rel, lineno, text in matches[:MAX_SEARCH_MATCHES]:
-        text = text.strip()
-        if len(text) > MAX_MATCH_TEXT:
-            text = text[:MAX_MATCH_TEXT] + "..."
-        lines.append(f"{rel}:{lineno}: {text}")
-    if total > MAX_SEARCH_MATCHES:
-        lines.append(f"... {total - MAX_SEARCH_MATCHES} more matches; narrow the query")
-    return ToolResult(True, "\n".join(lines), {"count": total})
+    shown = matches[:MAX_SEARCH_MATCHES]
+    by_file: dict[str, list[int]] = {}
+    for rel, lineno, _ in shown:
+        by_file.setdefault(rel, []).append(lineno)
+    blocks = []
+    for rel, hits in by_file.items():
+        try:
+            source = ws.read_text(rel).splitlines()
+        except ValueError:
+            source = []
+        hit_set = set(hits)
+        wanted = sorted({n for h in hits for n in range(h - SEARCH_CONTEXT_LINES, h + SEARCH_CONTEXT_LINES + 1)
+                         if 1 <= n <= len(source)})
+        lines, previous = [f"{rel}:"], None
+        for n in wanted:
+            if previous is not None and n != previous + 1:
+                lines.append("   ...")
+            text = source[n - 1]
+            if len(text) > MAX_MATCH_TEXT:
+                text = text[:MAX_MATCH_TEXT] + "..."
+            lines.append(f"{'>>' if n in hit_set else '  '} {n:>4} | {text}")
+            previous = n
+        if not source:  # unreadable file: fall back to the bare hit lines
+            lines += [f">> {n:>4} | {t.strip()[:MAX_MATCH_TEXT]}" for r, n, t in shown if r == rel]
+        blocks.append("\n".join(lines))
+    out = "\n".join(blocks)
+    if total > len(shown):
+        out += f"\n... {total - len(shown)} more matches; narrow the query"
+    return ToolResult(True, out, {"count": total})
 
 
 def _search_rg(ws: Workspace, rg: str, query: str, regex: bool, root: Path, file_glob: str | None) -> ToolResult:
@@ -171,7 +194,7 @@ def _search_rg(ws: Workspace, rg: str, query: str, regex: bool, root: Path, file
             rel = m.group(1)
         matches.append((rel, int(m.group(2)), m.group(3)))
     matches.sort(key=lambda t: (t[0], t[1]))
-    return _format_matches(matches, len(matches), query)
+    return _format_matches(ws, matches, len(matches), query)
 
 
 def _search_python(ws: Workspace, query: str, regex: bool, root: Path, file_glob: str | None) -> ToolResult:
@@ -202,7 +225,7 @@ def _search_python(ws: Workspace, query: str, regex: bool, root: Path, file_glob
                 total += 1
                 if len(matches) < MAX_SEARCH_MATCHES:
                     matches.append((rel, lineno, line))
-    return _format_matches(matches, total, query)
+    return _format_matches(ws, matches, total, query)
 
 
 @never_raises
@@ -224,8 +247,12 @@ def search_code(ws: Workspace, cfg: Any, query: str = "", regex: Any = False, pa
 
 # ---------------------------------------------------------------------- view_file
 @never_raises
-def view_file(ws: Workspace, cfg: Any, path: str = "", start_line: Any = 1, end_line: Any = None) -> ToolResult:
-    """Show a file with line numbers, at most 250 lines per call, with a paging hint."""
+def view_file(ws: Workspace, cfg: Any, path: str = "", start_line: Any = None, end_line: Any = None) -> ToolResult:
+    """Show a file with line numbers: 80 lines by default, at most 200 per call.
+
+    With no start_line on a file longer than 80 lines, return its outline plus the first 40 lines, so the
+    agent can jump straight to the right place instead of paging through the whole file.
+    """
     if not str(path or "").strip():
         return ToolResult(False, "path is required.")
     target = ws.resolve(path)
@@ -237,21 +264,32 @@ def view_file(ws: Workspace, cfg: Any, path: str = "", start_line: Any = 1, end_
     rel = ws.rel(target)
     if total == 0:
         return ToolResult(True, f"File: {rel} (0 lines)\n(empty file)", {"total": 0})
-    start = max(1, as_int(start_line, "start_line", 1))
+    requested_start = as_int(start_line, "start_line", None)
+    end = as_int(end_line, "end_line", None)
+    if requested_start is None and end is None and total > DEFAULT_VIEW_LINES:
+        from harness.repomap import outline_file
+
+        outline = outline_file(rel, text)
+        body = [f"{n:>5} | {_cap_line(lines[n - 1])}" for n in range(1, PREVIEW_LINES + 1)]
+        out = [f"File: {rel} ({total} lines) — outline, then lines 1-{PREVIEW_LINES}",
+               *(f"  {entry}" for entry in outline or ["(no classes or functions found)"]), *body,
+               f"[{total - PREVIEW_LINES} more lines — call view_file with start_line (and end_line) to see a "
+               f"section; max {MAX_VIEW_LINES} lines per call]"]
+        return ToolResult(True, "\n".join(out), {"total": total, "start": 1, "end": PREVIEW_LINES, "outline": True})
+    start = max(1, requested_start or 1)
     if start > total:
         return ToolResult(False, f"start_line {start} is past the end of {rel} ({total} lines).")
-    end = as_int(end_line, "end_line", None)
-    end = total if end is None else min(end, total)
+    end = min(total, start + DEFAULT_VIEW_LINES - 1) if end is None else min(end, total)
     if end < start:
         return ToolResult(False, f"end_line ({end}) must be >= start_line ({start}).")
     end = min(end, start + MAX_VIEW_LINES - 1)
-    body = []
-    for n in range(start, end + 1):
-        line = lines[n - 1]
-        if len(line) > MAX_LINE_CHARS:
-            line = line[:MAX_LINE_CHARS] + f"...[+{len(line) - MAX_LINE_CHARS} chars]"
-        body.append(f"{n:>5} | {line}")
+    body = [f"{n:>5} | {_cap_line(lines[n - 1])}" for n in range(start, end + 1)]
     out = [f"File: {rel} ({total} lines) — showing {start}-{end}", *body]
     if end < total:
         out.append(f"[{total - end} more lines — call view_file with start_line={end + 1}]")
     return ToolResult(True, "\n".join(out), {"total": total, "start": start, "end": end})
+
+
+def _cap_line(line: str) -> str:
+    """Very long lines (minified code) are cut."""
+    return line if len(line) <= MAX_LINE_CHARS else line[:MAX_LINE_CHARS] + f"...[+{len(line) - MAX_LINE_CHARS} chars]"

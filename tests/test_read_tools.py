@@ -102,18 +102,20 @@ def test_find_files_cap(ws: Workspace) -> None:
 def test_search_python_literal(ws: Workspace, no_rg: None) -> None:
     res = search_code(ws, None, query="parse")
     lines = res.output.splitlines()
-    assert "pkg/mod.py:1: def parse(x):" in lines
-    assert "tests/test_mod.py:1: from pkg.mod import parse" in lines
+    assert "pkg/mod.py:" in lines and ">>    1 | def parse(x):" in lines
+    assert "tests/test_mod.py:" in lines and ">>    1 | from pkg.mod import parse" in lines
+    assert "      2 |     return int(x)  # parse it" not in lines  # line 2 is also a match (marked >>)
+    assert ">>    2 |     return int(x)  # parse it" in lines
     assert not any("node_modules" in l or ".venv" in l or "logo.png" in l for l in lines)
     assert "PARSE_LIMIT" not in res.output  # case-sensitive literal search
 
 
 def test_search_python_regex_glob_and_path(ws: Workspace, no_rg: None) -> None:
-    assert search_code(ws, None, query=r"def \w+\(", regex=True).output.startswith("pkg/mod.py:1:")
+    assert search_code(ws, None, query=r"def \w+\(", regex=True).output.startswith("pkg/mod.py:\n>>    1 | def parse")
     res = search_code(ws, None, query="parse", file_glob="test_*.py")
-    assert all(l.startswith("tests/") for l in res.output.splitlines())
+    assert [l for l in res.output.splitlines() if l.endswith(":") and " | " not in l] == ["tests/test_mod.py:"]
     res = search_code(ws, None, query="parse", path="pkg")
-    assert all(l.startswith("pkg/") for l in res.output.splitlines())
+    assert all(l.startswith("pkg/") for l in res.output.splitlines() if l.endswith(":") and " | " not in l)
     assert not search_code(ws, None, query="(", regex=True).ok
 
 
@@ -121,14 +123,16 @@ def test_search_python_no_match_and_cap(ws: Workspace, no_rg: None) -> None:
     res = search_code(ws, None, query="zzz_nothing")
     assert res.ok and res.output == "No matches for 'zzz_nothing'. Try a shorter or different term."
     res = search_code(ws, None, query="line ", path="big.py")
-    assert res.output.count("big.py:") == 50 and "550 more matches; narrow the query" in res.output
+    assert res.output.count(">> ") == 25 and "575 more matches; narrow the query" in res.output
+    assert f"   {26:>4} | line 26" in res.output and f"   {29:>4} |" not in res.output  # 3 context lines
+    assert res.output.count("big.py:") == 1  # overlapping windows merged into one block
     assert not search_code(ws, None, query="").ok
 
 
 def test_search_long_line_truncated(ws: Workspace, no_rg: None) -> None:
     (ws.repo_root / "long.py").write_text("needle = '" + "x" * 500 + "'\n")
-    line = search_code(ws, None, query="needle").output
-    assert len(line) < len("long.py:1: ") + 210 and line.endswith("...")
+    out = search_code(ws, None, query="needle").output
+    assert out.splitlines()[1].endswith("...") and len(out.splitlines()[1]) < 220
 
 
 # ---------------------------------------------------------------- search_code (ripgrep)
@@ -140,7 +144,7 @@ def test_search_uses_rg_when_available(ws: Workspace, tmp_path: Path, monkeypatc
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setattr(read_tools.shutil, "which", lambda name: str(fake))
     res = search_code(ws, None, query="return int", file_glob="*.py")
-    assert res.output == "pkg/mod.py:2: return int(x)  # parse it"
+    assert res.output == f"pkg/mod.py:\n   {1:>4} | def parse(x):\n>> {2:>4} |     return int(x)  # parse it"
     args = (fake.parent / "args.txt").read_text().splitlines()
     assert args[:3] == ["--line-number", "--no-heading", "--color"]
     assert "-F" in args and "!node_modules/" in args and "*.py" in args
@@ -150,7 +154,7 @@ def test_search_uses_rg_when_available(ws: Workspace, tmp_path: Path, monkeypatc
 @pytest.mark.skipif(REAL_RG is None, reason="ripgrep not installed")
 def test_search_real_rg(ws: Workspace) -> None:
     res = search_code(ws, None, query="parse")
-    assert "pkg/mod.py:1: def parse(x):" in res.output.splitlines()
+    assert ">>    1 | def parse(x):" in res.output.splitlines()
     assert "node_modules" not in res.output and ".venv" not in res.output
     assert search_code(ws, None, query="zzz_nothing").output.startswith("No matches")
 
@@ -178,9 +182,14 @@ def test_view_file_basic(ws: Workspace) -> None:
 
 
 def test_view_file_paging(ws: Workspace) -> None:
-    res = view_file(ws, None, path="big.py")
-    assert "showing 1-250" in res.output and "  250 | line 250" in res.output
-    assert res.output.endswith("[350 more lines — call view_file with start_line=251]")
+    res = view_file(ws, None, path="big.py")  # long file, no start_line: outline + first 40 lines
+    assert res.output.splitlines()[0] == "File: big.py (600 lines) — outline, then lines 1-40"
+    assert "   40 | line 40" in res.output and "   41 | line 41" not in res.output
+    assert "start_line (and end_line)" in res.output and res.data["outline"]
+    res = view_file(ws, None, path="big.py", start_line=1)  # default window: 80 lines
+    assert "showing 1-80" in res.output and res.output.endswith("[520 more lines — call view_file with start_line=81]")
+    res = view_file(ws, None, path="big.py", start_line=100, end_line=9999)  # hard cap: 200 lines
+    assert "showing 100-299" in res.output
     res = view_file(ws, None, path="big.py", start_line="590", end_line=9999)
     assert "showing 590-600" in res.output and "more lines" not in res.output
     res = view_file(ws, None, path="big.py", start_line=10, end_line=12)

@@ -172,3 +172,30 @@ def related_tests(ws: Any, source_paths: list[str], limit: int = 10) -> list[str
         if any(p.search(content) for pats in patterns.values() for p in pats):
             by_import.append(rel)
     return (by_name + by_import)[:limit]
+
+
+_TRACE_FRAME = re.compile(r'File "(.+?)", line (\d+)(?:, in ([^\s,]+))?')
+
+
+def localize_from_traceback(ws: Any, issue_text: str) -> dict | None:
+    """Localization straight from a traceback that names repo source files (no LLM), or None.
+
+    Frames are matched to repo files by the longest existing path suffix (so /home/u/proj/pkg/m.py finds
+    pkg/m.py); test files are ignored. The innermost repo frame is where the failure surfaced.
+    """
+    frames: list[tuple[str, int, str]] = []
+    for path, line, func in _TRACE_FRAME.findall(issue_text or ""):
+        parts = [p for p in path.replace("\\", "/").split("/") if p]
+        for i in range(len(parts)):
+            rel = "/".join(parts[i:])
+            if (ws.repo_root / rel).is_file() and _is_code(rel) and not ws.is_test_file(rel):
+                frames.append((rel, int(line), func or ""))
+                break
+    if not frames:
+        return None
+    rel, line, func = frames[-1]
+    files = list(dict.fromkeys(f for f, _, _ in reversed(frames)))[:3]
+    symbols = list(dict.fromkeys(fn for _, _, fn in reversed(frames) if fn and not fn.startswith("<")))[:3]
+    where = f"{rel}:{line}" + (f" in {func}" if func and not func.startswith("<") else "")
+    return {"files": files, "symbols": symbols, "confidence": "medium", "finished": True, "source": "traceback",
+            "root_cause": f"The traceback in the issue shows the failure surfacing at {where}."}
