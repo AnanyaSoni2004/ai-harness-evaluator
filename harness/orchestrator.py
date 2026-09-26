@@ -17,6 +17,7 @@ from harness.agent import AgentLoop
 from harness.events import NullUI, Trajectory
 from harness.localize import extract_terms, rank_files, related_tests
 from harness.repomap import build_repo_map
+from harness.spectrum import SpectrumAnalyzer, format_suspicious
 from harness.testing import TestRunner, compare
 from harness.textproto import first_json_object
 from harness.tools.exec_tools import run_command
@@ -165,6 +166,26 @@ class Orchestrator:
                     self.state.repro["reproduced"] = False
                     self._note(f"reproduce: repro exited {before['exit_code']} before any fix; not used as a gate")
 
+    def _trace(self) -> None:
+        """TRACE (no LLM): rank suspicious code from the failing repro vs passing tests. Purely additive."""
+        with self._timed("trace", "execution-based fault localization (no LLM)"):
+            scfg = self.cfg.spectrum
+            if scfg.enabled and self._remaining() < float(scfg.timeout_s) + 300:
+                spectrum: dict = {"ok": False, "reason": "low time budget"}
+            else:
+                if self._baseline_future is not None and not self._baseline_future.done():
+                    self.trajectory.log("trace_overlaps_baseline")  # both read-only; they only share CPU
+                try:
+                    result = SpectrumAnalyzer(self.ws, self.cfg, self.runner, self.ui, self.trajectory).analyze(self.state)
+                    spectrum = result.to_dict()
+                    if result.ok:
+                        spectrum["evidence"] = format_suspicious(result, self.ws, int(scfg.top_lines),
+                                                                 int(scfg.max_evidence_chars))
+                except Exception as e:  # noqa: BLE001 - the Tracer must never break a run
+                    spectrum = {"ok": False, "reason": f"crashed: {type(e).__name__}: {e}"}
+            self.state.spectrum = spectrum
+            self.ui.show_spectrum(spectrum)
+
     def _join_baseline(self) -> None:
         if self._baseline_future is None:
             return
@@ -265,9 +286,13 @@ class Orchestrator:
             for a in self.state.attempts:
                 outcome = "passed tests but not approved" if a["passed"] else a.get("reason") or "failed verification"
                 lines.append(f"attempt {a['attempt']}: {outcome} ({', '.join(a['files']) or 'no files'})")
-            ok, _ = self._attempt(len(self.state.attempts) + 1, "rescue",
-                                  "Previous attempts failed: " + "; ".join(lines) +
-                                  ". Start from a clean slate and reconsider the root cause.")
+            feedback = ("Previous attempts failed: " + "; ".join(lines) +
+                        ". Start from a clean slate and reconsider the root cause.")
+            edited = sorted({f for a in self.state.attempts for f in a.get("files", [])})
+            if self.state.spectrum.get("ok") and edited:
+                feedback += (f"\nThe previous attempts edited {', '.join(edited)}; if those are not in the top "
+                             "suspicious functions, reconsider.")
+            ok, _ = self._attempt(len(self.state.attempts) + 1, "rescue", feedback)
             return ok
         return False
 
@@ -335,6 +360,7 @@ class Orchestrator:
             self._intake(issue_text)
             self._localize(self._prelocalize())
             self._reproduce()
+            self._trace()
             self._join_baseline()
             success = self._fix_loop()
         except BudgetExceeded as e:

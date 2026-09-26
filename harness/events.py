@@ -74,6 +74,9 @@ class NullUI:
     def show_verification(self, attempt: Any, state: Any = None) -> None:
         """Verification table for the final attempt."""
 
+    def show_spectrum(self, spectrum: dict) -> None:
+        """Tracer ranking (or skip reason)."""
+
     def show_diff(self, diff: str) -> None:
         """The final patch."""
 

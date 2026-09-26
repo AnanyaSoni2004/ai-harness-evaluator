@@ -77,6 +77,21 @@ class RichUI:
             table.add_row(escape(check), escape(before), escape(after))
         self.console.print(table)
 
+    def show_spectrum(self, spectrum: dict) -> None:
+        """Top 5 suspicious functions after TRACE, or why the Tracer was skipped."""
+        if self.quiet:
+            return
+        if not spectrum.get("ok"):
+            self._print(f"  Tracer skipped: {spectrum.get('reason', 'not run')}", "dim")
+            return
+        table = Table(title="Suspicious code (Tracer)")
+        for column in ("#", "Function", "Location", "Score"):
+            table.add_column(column)
+        for i, f in enumerate((spectrum.get("functions") or [])[:5], 1):
+            table.add_row(str(i), escape(str(f["name"])), escape(f"{f['path']}:{f['start']}-{f['end']}"),
+                          f"{f['score']:.2f}")
+        self.console.print(table)
+
     def show_diff(self, diff: str) -> None:
         if not self.quiet:
             if diff.strip():

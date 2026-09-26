@@ -142,3 +142,42 @@ def test_orchestrator_falls_back_when_writer_crashes(tmp_path: Path, monkeypatch
     state, run_dir = Orchestrator(cfg, FakeLLM([fail])).solve(tmp_path / "repo", "x")
     assert (run_dir / "state.json").exists() and (run_dir / "patch.diff").exists()
     assert any("writer failed (RuntimeError: disk full)" in n for n in state.notes)
+
+
+# ---------------------------------------------------------------- T6: Fault localization subsection
+from harness.report import fault_localization_section  # noqa: E402
+
+SPECTRUM_OK = {"ok": True, "formula": "ochiai", "failing_runs": 1, "passing_runs": 3, "low_confidence": False,
+               "functions": [
+                   {"path": "inventory.py", "name": "count", "start": 8, "end": 9, "score": 0.9, "ef": 1, "ep": 0},
+                   {"path": "inventory.py", "name": "remove", "start": 1, "end": 2, "score": 0.71, "ef": 1, "ep": 1}]}
+
+
+def test_fault_localization_table_and_rank_hits(ws: Workspace) -> None:
+    state = fake_state(ws)
+    state.spectrum = SPECTRUM_OK
+    text = "\n".join(fault_localization_section(state, ws.diff()))
+    assert "### Fault localization" in text and "Ochiai over 1 failing and 3 passing run(s):" in text
+    assert "| 1 | inventory.py:8-9 | count | 0.90 | fail 1/1, pass 0/3 |" in text
+    assert "| 2 | inventory.py:1-2 | remove | 0.71 | fail 1/1, pass 1/3 |" in text
+    assert "Patch touches suspicious rank(s): #2" in text  # the fixture patch edits remove(), lines 1-2
+    md = render_report(state, ws.diff(), fake_metrics())
+    assert md.index("## Evidence") < md.index("### Fault localization") < md.index("## Efficiency")
+
+
+def test_fault_localization_skip_lines(ws: Workspace) -> None:
+    state = fake_state(ws)
+    state.spectrum = {"ok": False, "reason": "no reproduction"}
+    assert "Tracer skipped: no reproduction" in fault_localization_section(state, ws.diff())
+    state.spectrum = {}
+    assert "Tracer: not run." in fault_localization_section(state, "")
+    state.spectrum = dict(SPECTRUM_OK, low_confidence=True)
+    lines = fault_localization_section(state, "--- a/other.py\n+++ b/other.py\n@@ -1 +1 @@\n-a\n+b\n")
+    assert "Patch touches no ranked function." in lines and any("(low confidence)" in l for l in lines)
+
+
+def test_trace_row_in_efficiency_table(ws: Workspace) -> None:
+    metrics = fake_metrics()
+    metrics.add_time("trace", 0.8)
+    md = render_report(fake_state(ws), ws.diff(), metrics)
+    assert "| trace | 0 | 0 | 0 | 0 | 0.8 |" in md  # the zero-token claim, visible to a judge

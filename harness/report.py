@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import harness
+from harness.spectrum import touched_ranks
 from harness.types import Metrics, RunState
 
 STATUS_LINES = {
@@ -112,6 +113,30 @@ def evidence_section(state: RunState, attempt: dict | None, kept: bool) -> list[
     return out + [""]
 
 
+def fault_localization_section(state: RunState, diff: str) -> list[str]:
+    """Tracer results: top suspicious functions and which of them the patch touches."""
+    spec = state.spectrum or {}
+    out = ["### Fault localization", ""]
+    if not spec:
+        return out + ["Tracer: not run.", ""]
+    if not spec.get("ok"):
+        return out + [f"Tracer skipped: {spec.get('reason') or 'unknown reason'}", ""]
+    functions = spec.get("functions") or []
+    nf, np_ = spec.get("failing_runs", 0), spec.get("passing_runs", 0)
+    formula = "Tarantula" if spec.get("formula") == "tarantula" else "Ochiai"
+    out += [f"{formula} over {nf} failing and {np_} passing run(s)"
+            f"{' (low confidence)' if spec.get('low_confidence') else ''}:", "",
+            "| Rank | Location | Function | Score | Fail/pass hits |", "| ---: | --- | --- | ---: | --- |"]
+    for i, f in enumerate(functions[:5], 1):
+        out.append(f"| {i} | {_cell(f['path'])}:{f['start']}-{f['end']} | {_cell(f['name'])} | {f['score']:.2f} | "
+                   f"fail {f.get('ef', 0)}/{nf}, pass {f.get('ep', 0)}/{np_} |")
+    ranks = touched_ranks(diff, functions) if diff else []
+    touched = ", ".join(f"#{r}" for r in ranks)
+    out += ["", f"Patch touches suspicious rank(s): {touched}" if ranks else
+            ("Patch touches no ranked function." if diff else "No patch to compare."), ""]
+    return out
+
+
 def efficiency_section(metrics: Metrics) -> list[str]:
     """Per-phase and total LLM calls, tokens, tool calls and seconds."""
     out = ["## Efficiency", "", "| Phase | LLM calls | Prompt tokens | Completion tokens | Tool calls | Seconds |",
@@ -138,6 +163,7 @@ def render_report(state: RunState, diff: str, metrics: Metrics) -> str:
              f"- **Fix summary:** {(attempt or {}).get('summary') or '(none)'}" if kept else "- **Fix summary:** none",
              f"- **Attempts:** {len(state.attempts)}", ""]
     lines += evidence_section(state, attempt, kept)
+    lines += fault_localization_section(state, diff)
     lines += efficiency_section(metrics)
     lines += ["## Patch", "", "```diff", diff.rstrip("\n") or "(no changes)", "```", ""]
     if state.notes:

@@ -80,3 +80,16 @@ def test_thinking_is_silent_outside_a_terminal() -> None:
     ui_tty, _ = make_ui(terminal=True)
     with ui_tty.thinking("fix"):
         pass
+
+
+def test_show_spectrum() -> None:
+    ui, buf = make_ui()
+    ui.show_spectrum({"ok": True, "functions": [
+        {"name": "Inventory.remove", "path": "toolkit/inventory.py", "start": 16, "end": 21, "score": 0.7071}]})
+    ui.show_spectrum({"ok": False, "reason": "no reproduction"})
+    out = buf.getvalue()
+    assert "Suspicious code (Tracer)" in out and "Inventory.remove" in out and "toolkit/inventory.py:16-21" in out
+    assert "0.71" in out and "Tracer skipped: no reproduction" in out
+    quiet, qbuf = make_ui(quiet=True)
+    quiet.show_spectrum({"ok": False, "reason": "x"})
+    assert qbuf.getvalue() == ""
