@@ -195,3 +195,52 @@ def test_fake_llm_budget():
     fake.complete([], None, "p")
     with pytest.raises(BudgetExceeded):
         fake.complete([], None, "p")
+
+
+# ---------------------------------------------------------------- Phase M1: authoritative probe
+@pytest.mark.parametrize("reply, reason", [
+    (fake_response(content="Sure, ok!"), "no tool call"),
+    (fake_response(tool_calls=[native_call("ping", '{"message": "ok"')]), "not a JSON object"),
+    (fake_response(tool_calls=[native_call("ping", '"ok"')]), "not a JSON object"),
+    (fake_response(tool_calls=[native_call("pong", '{"message": "ok"}')]), "unknown tool name"),
+])
+def test_probe_text_triggers(monkeypatch, reply, reason):
+    client = make_client(monkeypatch, Recorder(reply), tool_mode="auto")
+    assert client.tool_mode == "text"
+    assert reason in client.probe_info["reason"]
+
+
+def test_probe_native_records_raw_reply(monkeypatch):
+    rec = Recorder(fake_response(tool_calls=[native_call("ping", '{"message": "ok"}')]))
+    client = make_client(monkeypatch, rec, tool_mode="auto")
+    assert client.probe_tool_mode() == "native"
+    assert "ping" in client.probe_info["raw"] and client.metrics.per_phase["probe"].llm_calls == 1
+
+
+def test_force_text_mode_skips_probe(monkeypatch):
+    rec = Recorder()  # any model call would fail: the script is empty
+    client = make_client(monkeypatch, rec, tool_mode="auto")
+    client.cfg.model.name = "dashscope/Qwen-Max"
+    client.cfg.model.force_text_mode_for = ["qwen", "deepseek-reasoner"]
+    assert client.tool_mode == "text" and rec.kwargs == []
+    assert "qwen" in client.probe_info["reason"]
+
+
+def test_force_text_mode_no_match_still_probes(monkeypatch):
+    rec = Recorder(fake_response(tool_calls=[native_call("ping", '{"message": "ok"}')]))
+    client = make_client(monkeypatch, rec, tool_mode="auto")
+    client.cfg.model.name = "deepseek/deepseek-chat"
+    client.cfg.model.force_text_mode_for = ["qwen", "deepseek-reasoner"]
+    assert client.tool_mode == "native" and len(rec.kwargs) == 1
+
+
+def test_ping_verbose_output(monkeypatch, capsys):
+    from harness.cli import main
+    rec = Recorder(fake_response(content="I cannot call tools, but: ping ok"), fake_response(content="PONG"))
+    monkeypatch.setattr(litellm, "completion", rec)
+    assert main(["--ping", "--verbose"]) == 0
+    out = capsys.readouterr().out
+    assert "Endpoint:  (provider default)" in out
+    assert "Probe:     text (no tool call in reply)" in out
+    assert "I cannot call tools" in out and "Reply:     'PONG'" in out
+    assert FAKE_KEY not in out

@@ -25,7 +25,7 @@ def self_check() -> int:
     return 0
 
 
-def ping() -> int:
+def ping(verbose: bool = False) -> int:
     """Probe tool mode and send one tiny request to the configured model."""
     from harness.config import load_config
     from harness.events import Trajectory
@@ -43,6 +43,11 @@ def ping() -> int:
         print(f"Ping failed: {e}")
         return 1
     print(f"Model:     {cfg.model.name}")
+    if verbose:
+        info = client.probe_info
+        print(f"Endpoint:  {cfg.model.api_base or '(provider default)'}")
+        print(f"Probe:     {info.get('mode', mode)} ({info.get('reason', 'configured tool_mode, no probe')})")
+        print(f"Probe raw: {info.get('raw', '')[:200]!r}")
     print(f"Tool mode: {mode}")
     print(f"Reply:     {resp.text.strip()!r}")
     print(f"Tokens:    {metrics.prompt_tokens} prompt + {metrics.completion_tokens} completion "
@@ -56,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     parser.add_argument("--self-check", action="store_true", help="import all modules and exit")
     parser.add_argument("--ping", action="store_true", help="send one tiny request to the configured model")
+    parser.add_argument("--verbose", action="store_true", help="with --ping: show endpoint and probe details")
     return parser
 
 
@@ -68,6 +74,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.self_check:
         return self_check()
     if args.ping:
-        return ping()
+        return ping(verbose=args.verbose)
     build_parser().print_help()
     return 0

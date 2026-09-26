@@ -51,8 +51,8 @@ PING_TOOL = {
     },
 }
 
-# Probe results are cached per (model, endpoint) for the lifetime of the process.
-_TOOL_MODE_CACHE: dict[tuple[str, str | None], str] = {}
+# Probe results ({"mode", "reason", "raw"}) are cached per (model, endpoint) for the process lifetime.
+_TOOL_MODE_CACHE: dict[tuple[str, str | None], dict[str, str]] = {}
 
 
 class LLMClient:
@@ -67,7 +67,8 @@ class LLMClient:
         self._tool_mode: str | None = None if cfg.model.tool_mode == "auto" else cfg.model.tool_mode
         self._sleep: Callable[[float], None] = time.sleep
         self._n_calls = 0
-        self.last_probe_reply = ""
+        # Diagnostics from the last tool-mode decision: {"mode", "reason", "raw"}.
+        self.probe_info: dict[str, str] = {}
 
     # ------------------------------------------------------------------ tool mode
     @property
@@ -77,26 +78,70 @@ class LLMClient:
             self._tool_mode = self.probe_tool_mode()
         return self._tool_mode
 
+    def _forced_text_match(self) -> str | None:
+        """The model.force_text_mode_for entry matching model.name (case-insensitive), if any."""
+        name = self.cfg.model.name.lower()
+        for pattern in self.cfg.model.force_text_mode_for or []:
+            if str(pattern).strip() and str(pattern).lower() in name:
+                return str(pattern)
+        return None
+
+    @staticmethod
+    def _judge_probe(message: Any) -> tuple[str, str]:
+        """Decide (mode, reason) from the probe reply: native only for a well-formed ping call."""
+        calls = getattr(message, "tool_calls", None) or []
+        if not calls:
+            return "text", "no tool call in reply"
+        fn = getattr(calls[0], "function", None)
+        name = str(getattr(fn, "name", "") or "")
+        if name != PING_TOOL["function"]["name"]:
+            return "text", f"returned unknown tool name {name!r}"
+        raw_args = getattr(fn, "arguments", None)
+        if isinstance(raw_args, dict):
+            return "native", "well-formed ping call"
+        try:
+            if not isinstance(json.loads(raw_args or ""), dict):
+                raise ValueError("not an object")
+        except (ValueError, TypeError):
+            return "text", "tool arguments are not a JSON object"
+        return "native", "well-formed ping call"
+
+    @staticmethod
+    def _raw_reply(message: Any) -> str:
+        """Content plus any tool calls of a reply, as text for diagnostics."""
+        parts = [str(getattr(message, "content", "") or "")]
+        for tc in getattr(message, "tool_calls", None) or []:
+            fn = getattr(tc, "function", None)
+            parts.append(f"[tool_call {getattr(fn, 'name', '')}({getattr(fn, 'arguments', '')})]")
+        return " ".join(p for p in parts if p)
+
     def probe_tool_mode(self) -> str:
-        """Ask the model to call a ping tool; 'native' if it returns a tool call, else 'text'."""
+        """Decide native vs text tool calling once per (model, endpoint); see _judge_probe."""
         key = (self.cfg.model.name, self.cfg.model.api_base)
         if key in _TOOL_MODE_CACHE:
-            return _TOOL_MODE_CACHE[key]
-        messages = [{"role": "user", "content": "Call the ping tool with message 'ok'."}]
-        try:
-            raw = self._call_with_retries(messages, [PING_TOOL], "probe")
-            message = raw.choices[0].message
-            self.last_probe_reply = str(getattr(message, "content", "") or "")
-            self._record_usage(raw, "probe")
-            mode = "native" if getattr(message, "tool_calls", None) else "text"
-        except FatalLLMError as e:
-            if isinstance(e.__cause__, BAD_REQUEST) and not isinstance(e.__cause__, AUTH_ERRORS):
-                mode = "text"
-            else:
-                raise
-        self.trajectory.log("tool_mode_probe", model=self.cfg.model.name, mode=mode)
-        _TOOL_MODE_CACHE[key] = mode
-        return mode
+            self.probe_info = dict(_TOOL_MODE_CACHE[key], reason="cached: " + _TOOL_MODE_CACHE[key]["reason"])
+            return self.probe_info["mode"]
+        forced = self._forced_text_match()
+        if forced is not None:
+            info = {"mode": "text", "reason": f"forced by force_text_mode_for entry {forced!r}", "raw": ""}
+        else:
+            messages = [{"role": "user", "content": "Call the ping tool with message 'ok'."}]
+            try:
+                raw = self._call_with_retries(messages, [PING_TOOL], "probe")
+                message = raw.choices[0].message
+                self._record_usage(raw, "probe")
+                mode, reason = self._judge_probe(message)
+                info = {"mode": mode, "reason": reason, "raw": self._raw_reply(message)}
+            except FatalLLMError as e:
+                if isinstance(e.__cause__, BAD_REQUEST) and not isinstance(e.__cause__, AUTH_ERRORS):
+                    info = {"mode": "text", "reason": "endpoint rejected tools (bad request)", "raw": str(e)}
+                else:
+                    raise
+        self.trajectory.log("tool_mode_probe", model=self.cfg.model.name, mode=info["mode"],
+                            reason=info["reason"], raw=info["raw"][:200])
+        _TOOL_MODE_CACHE[key] = info
+        self.probe_info = dict(info)
+        return info["mode"]
 
     # ------------------------------------------------------------------ calls
     def _check_budget(self) -> None:

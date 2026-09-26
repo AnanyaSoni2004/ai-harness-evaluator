@@ -28,6 +28,7 @@ class ModelConfig:
     max_output_tokens: int = 4096
     context_window: int = 128000
     tool_mode: str = "auto"
+    force_text_mode_for: list[str] = field(default_factory=list)
     request_timeout_s: float = 120
     max_retries: int = 5
 
@@ -186,6 +187,14 @@ def load_config(path: str | None = None) -> Config:
     if cfg.model.tool_mode not in TOOL_MODES:
         warnings.warn(f"config: model.tool_mode '{cfg.model.tool_mode}' is invalid; using 'auto'")
         cfg.model.tool_mode = "auto"
+    forced = cfg.model.force_text_mode_for
+    if forced is None:
+        cfg.model.force_text_mode_for = []
+    elif isinstance(forced, str):
+        cfg.model.force_text_mode_for = [forced]
+    elif not isinstance(forced, list):
+        warnings.warn("config: model.force_text_mode_for must be a list of strings; ignored")
+        cfg.model.force_text_mode_for = []
     if not cfg.output.workspaces_dir:
         cfg.output.workspaces_dir = str(Path(tempfile.gettempdir()) / "ai-harness-workspaces")
     return cfg

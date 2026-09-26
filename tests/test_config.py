@@ -100,3 +100,11 @@ def test_missing_explicit_file(tmp_path: Path) -> None:
 def test_bad_yaml(tmp_path: Path) -> None:
     with pytest.raises(HarnessError, match="Could not parse"):
         load_config(_write(tmp_path, "model: [unclosed\n"))
+
+
+def test_force_text_mode_for(tmp_path: Path) -> None:
+    assert load_config().model.force_text_mode_for == []
+    cfg = load_config(_write(tmp_path, "model:\n  force_text_mode_for: [qwen, deepseek-reasoner]\n"))
+    assert cfg.model.force_text_mode_for == ["qwen", "deepseek-reasoner"]
+    assert load_config(_write(tmp_path, "model:\n  force_text_mode_for: qwen\n")).model.force_text_mode_for == ["qwen"]
+    assert load_config(_write(tmp_path, "model:\n  force_text_mode_for: null\n")).model.force_text_mode_for == []
