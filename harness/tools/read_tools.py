@@ -180,7 +180,8 @@ def _search_python(ws: Workspace, query: str, regex: bool, root: Path, file_glob
         pattern = re.compile(query) if regex else None
     except re.error as e:
         return ToolResult(False, f"Invalid regex: {e}. Set regex=false for a literal search.")
-    files = [root] if root.is_file() else [p for p in _walk_files(ws, root)]
+    # Same order as the rg path (sorted by display path), so the 50-match cap keeps the same hits.
+    files = [root] if root.is_file() else sorted(_walk_files(ws, root), key=ws.rel)
     matches: list[tuple[str, int, str]] = []
     total = 0
     for file in files:

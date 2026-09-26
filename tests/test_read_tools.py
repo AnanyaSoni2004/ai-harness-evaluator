@@ -155,6 +155,18 @@ def test_search_real_rg(ws: Workspace) -> None:
     assert search_code(ws, None, query="zzz_nothing").output.startswith("No matches")
 
 
+@pytest.mark.skipif(REAL_RG is None, reason="ripgrep not installed")
+def test_rg_and_python_backends_agree(ws: Workspace, monkeypatch: pytest.MonkeyPatch) -> None:
+    (ws.repo_root / ".github").mkdir()
+    (ws.repo_root / ".github" / "ci.yml").write_text("run: line 1\n")
+    queries = [("parse", {}), ("line ", {}), (r"def \w+", {"regex": True}), ("parse", {"file_glob": "*.py"}),
+               ("parse", {"path": "pkg"}), ("zzz_nothing", {})]
+    rg_out = [search_code(ws, None, query=q, **kw).output for q, kw in queries]
+    monkeypatch.setattr(read_tools.shutil, "which", lambda name: None)
+    py_out = [search_code(ws, None, query=q, **kw).output for q, kw in queries]
+    assert rg_out == py_out
+
+
 # ---------------------------------------------------------------- view_file
 def test_view_file_basic(ws: Workspace) -> None:
     res = view_file(ws, None, path="pkg/mod.py")
