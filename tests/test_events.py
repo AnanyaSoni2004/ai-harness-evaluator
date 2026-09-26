@@ -8,7 +8,7 @@ import pytest
 from harness.events import NullUI, Trajectory, redact
 from harness.types import Usage
 
-FAKE_KEY = "sk-test-FAKEKEY-0123456789"
+FAKE_KEY = "test-FAKEKEY-0123456789"
 
 
 def test_redact_replaces_key(monkeypatch: pytest.MonkeyPatch) -> None:

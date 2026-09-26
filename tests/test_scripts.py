@@ -37,16 +37,18 @@ def looks_real(prefix: str, n: int) -> str:
 
 
 def test_clean_repo_passes(tmp_path: Path) -> None:
-    repo = make_repo(tmp_path, {"README.md": 'export AI_API_KEY="<PROVIDED_API_KEY>"\n',
-                                "tests/test_x.py": 'KEY = "sk-test-FAKEKEY-0123456789abcdef"\n'})
+    # Built from pieces so this source file itself never matches the secret patterns.
+    readme = "export AI_API_" + 'KEY="' + '<PROVIDED_API_KEY>"\n'
+    fake = "KEY = " + '"sk-' + 'test-FAKEKEY-0123456789abcdef"\n'
+    repo = make_repo(tmp_path, {"README.md": readme, "tests/test_x.py": fake})
     res = scan(repo)
     assert res.returncode == 0 and "SECRET SCAN: PASS" in res.stdout
 
 
 @pytest.mark.parametrize("content", [
     f'GROQ = "{looks_real("gsk_", 52)}"\n',
-    f'client = OpenAI(api_key="{looks_real("sk-proj-", 40)}")\n',
-    f'token: "{looks_real("", 24)}"\n',
+    "client = OpenAI(" + "api" + '_key="' + looks_real("sk-proj-", 40) + '")\n',
+    "tok" + 'en: "' + looks_real("", 24) + '"\n',
 ])
 def test_real_looking_secret_fails(tmp_path: Path, content: str) -> None:
     res = scan(make_repo(tmp_path, {"app.py": content}))

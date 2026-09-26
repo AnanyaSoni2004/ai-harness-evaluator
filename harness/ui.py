@@ -12,6 +12,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from harness import report
+from harness.events import redact
 
 
 class RichUI:
@@ -24,7 +25,7 @@ class RichUI:
 
     def _print(self, text: str, style: str = "") -> None:
         if not self.quiet:
-            self.console.print(escape(text), style=style or None)
+            self.console.print(escape(redact(text)), style=style or None)
 
     # ------------------------------------------------------------------ NullUI interface
     def phase(self, name: str, detail: str = "") -> None:
@@ -60,7 +61,7 @@ class RichUI:
 
     def error(self, msg: str) -> None:
         """Errors are always shown, even in quiet mode."""
-        self.console.print(f"[bold red]Error:[/bold red] {escape(msg)}")
+        self.console.print(f"[bold red]Error:[/bold red] {escape(redact(msg))}")
 
     def banner(self, model: str, tool_mode: str, version: str) -> None:
         if not self.quiet:
@@ -95,7 +96,7 @@ class RichUI:
     def show_diff(self, diff: str) -> None:
         if not self.quiet:
             if diff.strip():
-                self.console.print(Syntax(diff, "diff", theme="ansi_dark", word_wrap=True))
+                self.console.print(Syntax(redact(diff), "diff", theme="ansi_dark", word_wrap=True))
             else:
                 self.console.print("[dim](no changes)[/dim]")
 

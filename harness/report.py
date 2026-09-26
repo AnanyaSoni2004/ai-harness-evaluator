@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import harness
+from harness.events import redact
 from harness.spectrum import touched_ranks
 from harness.types import Metrics, RunState
 
@@ -187,8 +188,9 @@ def write_report(state: RunState, ws: Any, metrics: Metrics, run_dir: Path) -> d
     diff = ws.diff()
     paths = {"patch": run_dir / "patch.diff", "metrics": run_dir / "metrics.json",
              "state": run_dir / "state.json", "report": run_dir / "report.md"}
-    paths["patch"].write_text(diff, encoding="utf-8")
-    paths["metrics"].write_text(json.dumps(metrics.to_dict(), indent=2), encoding="utf-8")
-    paths["state"].write_text(json.dumps(state_for_json(state), indent=2, default=str), encoding="utf-8")
-    paths["report"].write_text(render_report(state, diff, metrics), encoding="utf-8")
+    # The key can only appear via echoed error messages; redact every artefact anyway.
+    paths["patch"].write_text(redact(diff), encoding="utf-8")
+    paths["metrics"].write_text(redact(json.dumps(metrics.to_dict(), indent=2)), encoding="utf-8")
+    paths["state"].write_text(redact(json.dumps(state_for_json(state), indent=2, default=str)), encoding="utf-8")
+    paths["report"].write_text(redact(render_report(state, diff, metrics)), encoding="utf-8")
     return paths

@@ -14,7 +14,7 @@ from typing import Any, Iterator
 
 from harness import prompts, report
 from harness.agent import AgentLoop
-from harness.events import NullUI, Trajectory
+from harness.events import NullUI, Trajectory, redact
 from harness.localize import extract_terms, rank_files, related_tests
 from harness.repomap import build_repo_map
 from harness.spectrum import SpectrumAnalyzer, format_suspicious
@@ -330,8 +330,8 @@ class Orchestrator:
         state = self.state.to_dict()
         for attempt in state.get("attempts", []):
             attempt.pop("snapshot", None)
-        (self.run_dir / "patch.diff").write_text(self.ws.diff(), encoding="utf-8")
-        (self.run_dir / "state.json").write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+        (self.run_dir / "patch.diff").write_text(redact(self.ws.diff()), encoding="utf-8")
+        (self.run_dir / "state.json").write_text(redact(json.dumps(state, indent=2, default=str)), encoding="utf-8")
 
     def solve(self, repo: Path, issue_text: str) -> tuple[RunState, Path]:
         """Resolve one issue in repo. Always returns the final state and the run directory."""

@@ -10,7 +10,7 @@ Built for the LCC × DevClub AI Coding Harness Hackathon 2026.
 
 ```bash
 git clone <this repo> && cd ai-harness-evaluator
-export AI_API_KEY="<PROVIDED_API_KEY>"
+export AI_API_KEY="..."      # the provided key
 make setup     # creates .venv and installs pinned dependencies (needs Python 3.10–3.14, git, make)
 make run       # launches the harness; it then asks for the target repository and the issue
 make test      # optional: our offline test suite (no API key needed)

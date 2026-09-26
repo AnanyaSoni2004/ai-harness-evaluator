@@ -12,7 +12,8 @@ PATTERNS=(
   'gh[pous]_[A-Za-z0-9]{30,}'
   '(api[_-]?key|token|secret)[[:space:]]*[:=][[:space:]]*['"'"'"][^'"'"'"$ ]{8,}'
 )
-ALLOW='fake|dummy|example|placeholder|<[A-Za-z_ -]+>'
+# looks_real( marks old test lines (in history) that build random fakes at runtime.
+ALLOW='fake|dummy|example|placeholder|<[A-Za-z_ -]+>|looks_real\('
 SELF=':!scripts/check_secrets.sh'
 status=0
 

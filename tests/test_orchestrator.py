@@ -124,3 +124,25 @@ def test_missing_repo_raises(cfg, tmp_path: Path) -> None:
     from harness.types import HarnessError
     with pytest.raises(HarnessError, match="Repository not found"):
         Orchestrator(cfg, FakeLLM([])).solve(tmp_path / "nope", "x")
+
+
+def test_key_echoed_in_errors_never_reaches_artefacts_or_screen(repo: Path, cfg, monkeypatch, capsys) -> None:
+    """A provider error that echoes the key must not leak into report.md, state.json or the terminal."""
+    from harness.ui import RichUI
+
+    key = "test-leaky-FAKE-key-9f8e7d6c5b4a"
+    monkeypatch.setenv("AI_API_KEY", key)
+
+    def auth_fail(messages):
+        raise FatalLLMError(f"Incorrect API key provided: {key}")
+
+    ui = RichUI()
+    state, run_dir = Orchestrator(cfg, FakeLLM([auth_fail]), ui=ui, python_exe=PY).solve(repo, "add is wrong")
+    ui.error(state.notes[-1])
+    assert state.status == "error"
+    for name in ("report.md", "state.json", "trajectory.jsonl", "metrics.json", "patch.diff"):
+        text = (run_dir / name).read_text()
+        assert key not in text, name
+    assert "***" in (run_dir / "state.json").read_text()
+    out = capsys.readouterr().out
+    assert key not in out and "Incorrect API key provided: ***" in out
