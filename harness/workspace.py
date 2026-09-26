@@ -160,8 +160,15 @@ class Workspace:
         return {key: _read_raw(self.repo_root / key) for key in self._originals}
 
     def restore(self, snapshot: dict[str, str | None]) -> None:
-        """Return touched files to a snapshot; files first touched after it go back to their original."""
-        for key, original in self._originals.items():
+        """Return touched files to a snapshot; files first touched after it go back to their original.
+
+        Snapshot files the history no longer knows (e.g. after revert_all) are re-recorded first, so a
+        snapshot taken before a revert can still be restored and later diffed/reverted.
+        """
+        for key in snapshot:
+            if key not in self._originals:
+                self._originals[key] = _read_raw(self.repo_root / key)
+        for key, original in list(self._originals.items()):
             wanted = snapshot.get(key, original)
             target = self.repo_root / key
             if wanted is None:

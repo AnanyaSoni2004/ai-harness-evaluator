@@ -156,3 +156,18 @@ def test_iter_source_files_skips_ignored(ws: Workspace) -> None:
     (root / "README.md").write_text("# hi\n")
     files = [ws.rel(p) for p in ws.iter_source_files()]
     assert files == ["README.md", "pkg/mod.py"]
+
+
+def test_restore_snapshot_after_revert_all(ws: Workspace) -> None:
+    ws.write_text("pkg/mod.py", "attempt 1\n")
+    ws.write_text("pkg/new.py", "created in attempt 1\n")
+    snap = ws.snapshot()
+    ws.revert_all()  # e.g. before a clean-slate rescue attempt
+    assert ws.diff() == ""
+    ws.restore(snap)  # the best attempt was the one before the revert
+    assert (ws.repo_root / "pkg" / "mod.py").read_text() == "attempt 1\n"
+    assert (ws.repo_root / "pkg" / "new.py").read_text() == "created in attempt 1\n"
+    assert ws.edited_files() == ["pkg/mod.py", "pkg/new.py"] and "+attempt 1" in ws.diff()
+    ws.revert_all()
+    assert (ws.repo_root / "pkg" / "mod.py").read_text() == "def f():\n    return 1\n"
+    assert not (ws.repo_root / "pkg" / "new.py").exists()

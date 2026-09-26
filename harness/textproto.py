@@ -213,6 +213,18 @@ def parse_tool_calls(text: str, id_prefix: str) -> list[ToolCall]:
     return []
 
 
+def first_json_object(text: str) -> dict | None:
+    """The first balanced {...} in text (reasoning stripped, trailing commas repaired) that parses as a dict."""
+    for candidate in _balanced_objects(strip_reasoning(text or "")):
+        try:
+            obj = _loads_lenient(candidate)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
 def format_tool_result(name: str, result: ToolResult) -> str:
     """Render a tool result as the user message sent back in text mode."""
     return f"[tool_result name={name} ok={'true' if result.ok else 'false'}]\n{result.output}"

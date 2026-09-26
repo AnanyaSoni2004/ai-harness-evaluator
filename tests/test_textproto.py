@@ -255,3 +255,12 @@ def test_instructions_contain_parseable_one_shot_example() -> None:
     assert call.name == "view_file" and call.arguments == {"path": "<path>"}
     assert len(block) / 3.5 < 80  # cheap: well under ~80 tokens
     assert "Example of a correct reply" not in render_tool_instructions([])
+
+
+def test_first_json_object() -> None:
+    from harness.textproto import first_json_object
+    assert first_json_object('Sure!\n```json\n{"verdict": "approve", "problems": [],}\n```') == {
+        "verdict": "approve", "problems": []}
+    assert first_json_object("<think>{\"verdict\": \"revise\"}</think>{\"verdict\": \"approve\"}") == {
+        "verdict": "approve"}
+    assert first_json_object("no json here") is None and first_json_object("") is None
