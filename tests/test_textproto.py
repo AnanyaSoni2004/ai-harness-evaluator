@@ -127,3 +127,92 @@ def test_at_most_one_call() -> None:
 def test_format_tool_result() -> None:
     assert format_tool_result("view_file", ToolResult(True, "ok")) == "[tool_result name=view_file ok=true]\nok"
     assert format_tool_result("x", ToolResult(False, "bad")).startswith("[tool_result name=x ok=false]")
+
+
+# ---------------------------------------------------------------- Phase M2: reasoning output
+from types import SimpleNamespace  # noqa: E402
+
+import litellm  # noqa: E402
+
+from harness.textproto import split_reasoning, strip_reasoning  # noqa: E402
+
+
+def test_think_before_tool_block() -> None:
+    text = ('<think>The user wants a.py. Maybe I should call '
+            '```tool\n{"name": "list_dir", "arguments": {}}\n``` first? No.</think>\n'
+            '```tool\n{"name": "view_file", "arguments": {"path": "a.py"}}\n```')
+    call = _one(text)
+    assert call.name == "view_file" and call.arguments == {"path": "a.py"}
+
+
+def test_unclosed_think_is_removed() -> None:
+    text = 'Answer first.\n<think>I am still reasoning about {"name": "view_file", "arguments": {}} and'
+    assert strip_reasoning(text) == "Answer first."
+    assert parse_tool_calls(text, "c1") == []
+
+
+def test_other_reasoning_tags() -> None:
+    text = ("<thinking>hmm</thinking>A <|begin_of_thought|>deep<|end_of_thought|>B "
+            "<THINK>caps</THINK>C")
+    clean, reasoning = split_reasoning(text)
+    assert clean == "A B C"
+    assert "hmm" in reasoning and "deep" in reasoning and "caps" in reasoning
+
+
+def test_orphan_closing_tag() -> None:
+    clean, reasoning = split_reasoning("the template opened the block... so x</think>\nFinal answer")
+    assert clean == "Final answer" and "template opened" in reasoning
+
+
+def test_no_reasoning_is_unchanged() -> None:
+    assert split_reasoning("plain text") == ("plain text", "")
+    assert split_reasoning("") == ("", "")
+
+
+def _client(monkeypatch, message, finish_reason="stop", tool_mode="text"):
+    from harness import llm as llm_mod
+    from harness.config import load_config
+    from harness.events import Trajectory
+    from harness.llm import LLMClient
+    from harness.types import Metrics
+
+    monkeypatch.setenv("AI_API_KEY", "fake-key-for-tests-only")
+    raw = SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
+                          usage=SimpleNamespace(prompt_tokens=5, completion_tokens=2))
+    monkeypatch.setattr(litellm, "completion", lambda **kw: raw)
+    llm_mod._TOOL_MODE_CACHE.clear()
+    cfg = load_config()
+    cfg.model.tool_mode = tool_mode
+    warnings: list[str] = []
+    ui = SimpleNamespace(thinking=lambda label: __import__("contextlib").nullcontext(),
+                         warn=warnings.append, llm_call=lambda phase, usage: None)
+    return LLMClient(cfg, Metrics(), Trajectory(None), ui), warnings
+
+
+def test_separate_reasoning_content_field(monkeypatch) -> None:
+    message = SimpleNamespace(
+        content='<think>inline</think>```tool\n{"name": "view_file", "arguments": {"path": "b.py"}}\n```',
+        reasoning_content="Long chain of thought.", tool_calls=None)
+    client, warnings = _client(monkeypatch, message)
+    resp = client.complete([], None, "fix")
+    assert resp.tool_calls[0].arguments == {"path": "b.py"}
+    assert "Long chain of thought." in resp.reasoning and "inline" in resp.reasoning
+    assert "chain of thought" not in resp.text and "<think>" not in resp.text
+    assert warnings == []
+
+
+def test_native_mode_strips_think_from_text(monkeypatch) -> None:
+    call = SimpleNamespace(id="c1", function=SimpleNamespace(name="view_file", arguments='{"path": "x.py"}'))
+    message = SimpleNamespace(content="<think>plan</think>Looking at x.py", tool_calls=[call])
+    client, _ = _client(monkeypatch, message, tool_mode="native")
+    resp = client.complete([], None, "fix")
+    assert resp.text == "Looking at x.py" and resp.reasoning == "plan"
+    assert resp.tool_calls[0].name == "view_file"
+
+
+def test_length_finish_warns(monkeypatch) -> None:
+    message = SimpleNamespace(content="<think>overthinking forever", tool_calls=None)
+    client, warnings = _client(monkeypatch, message, finish_reason="length")
+    resp = client.complete([], None, "localize")
+    assert resp.text == "" and resp.tool_calls == []
+    assert len(warnings) == 1 and "cut off" in warnings[0]

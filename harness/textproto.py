@@ -14,6 +14,42 @@ _TOOL_FENCE = re.compile(r"```tool[ \t]*\r?\n(.*?)(?:```|\Z)", re.DOTALL)
 _JSON_FENCE = re.compile(r"```json[ \t]*\r?\n(.*?)```", re.DOTALL)
 _TRAILING_COMMA = re.compile(r",\s*([}\]])")
 
+_REASONING_TAGS = [("<think>", "</think>"), ("<thinking>", "</thinking>"),
+                   ("<|begin_of_thought|>", "<|end_of_thought|>")]
+_REASONING_BLOCKS = [re.compile(re.escape(o) + r"(.*?)(?:" + re.escape(c) + r"|\Z)", re.DOTALL | re.IGNORECASE)
+                     for o, c in _REASONING_TAGS]
+_ORPHAN_CLOSE = re.compile("|".join(re.escape(c) for _, c in _REASONING_TAGS), re.IGNORECASE)
+
+
+def split_reasoning(text: str) -> tuple[str, str]:
+    """Split model output into (visible text, reasoning) by removing thinking blocks.
+
+    Handles <think>, <thinking> and <|begin_of_thought|> blocks, an unclosed opening tag (output cut
+    off mid-thought: everything after it is reasoning), and a closing tag whose opening tag was part
+    of the prompt template (everything before it is reasoning).
+    """
+    if not text:
+        return "", ""
+    thoughts: list[str] = []
+
+    def _take(match: re.Match) -> str:
+        thoughts.append(match.group(1).strip())
+        return ""
+
+    for pattern in _REASONING_BLOCKS:
+        text = pattern.sub(_take, text)
+    orphans = list(_ORPHAN_CLOSE.finditer(text))
+    if orphans:
+        last = orphans[-1]
+        thoughts.insert(0, _ORPHAN_CLOSE.sub("", text[:last.start()]).strip())
+        text = text[last.end():]
+    return text.strip(), "\n\n".join(t for t in thoughts if t)
+
+
+def strip_reasoning(text: str) -> str:
+    """Remove thinking blocks (closed, unclosed, or orphan-closed) before tool-call parsing."""
+    return split_reasoning(text)[0]
+
 
 def _type_label(prop: dict) -> str:
     """Human-readable type for one JSON-schema property."""
@@ -108,6 +144,7 @@ def _to_call(obj: Any, call_id: str) -> ToolCall | None:
 
 def parse_tool_calls(text: str, id_prefix: str) -> list[ToolCall]:
     """Extract at most one tool call from model text (```tool block, ```json block, then bare JSON)."""
+    text = strip_reasoning(text)  # a tool block drafted inside <think> is not a real call
     if not text:
         return []
     call_id = f"{id_prefix}_0"

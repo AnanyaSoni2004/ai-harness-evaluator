@@ -227,7 +227,10 @@ class LLMClient:
 
         choice = raw.choices[0]
         message = choice.message
-        text = getattr(message, "content", None) or ""
+        # Chain-of-thought is kept out of `text` so it is never replayed into the history.
+        text, inline_reasoning = textproto.split_reasoning(str(getattr(message, "content", None) or ""))
+        separate_reasoning = str(getattr(message, "reasoning_content", None) or "").strip()
+        reasoning = "\n\n".join(r for r in (separate_reasoning, inline_reasoning) if r)
         if native:
             tool_calls = self._parse_native_calls(getattr(message, "tool_calls", None))
         else:
@@ -238,6 +241,11 @@ class LLMClient:
         self.trajectory.log("llm_call", phase=phase, prompt_tokens=usage.prompt_tokens,
                             completion_tokens=usage.completion_tokens, finish_reason=finish_reason,
                             tool_calls=[{"name": c.name, "arguments": c.arguments} for c in tool_calls],
-                            text=text[:2000])
+                            text=text[:2000], reasoning=reasoning[:4000])
+        if finish_reason == "length":
+            msg = f"{phase}: model output was cut off (finish_reason=length), often from overthinking"
+            self.trajectory.log("llm_truncated", phase=phase, completion_tokens=usage.completion_tokens)
+            self.ui.warn(msg)
         self.ui.llm_call(phase, usage)
-        return LLMResponse(text=text, tool_calls=tool_calls, usage=usage, finish_reason=finish_reason)
+        return LLMResponse(text=text, tool_calls=tool_calls, usage=usage, finish_reason=finish_reason,
+                           reasoning=reasoning)

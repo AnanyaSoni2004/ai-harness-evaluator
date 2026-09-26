@@ -31,12 +31,17 @@ class Usage:
 
 @dataclass
 class LLMResponse:
-    """A parsed model reply: text, tool calls, and usage."""
+    """A parsed model reply: text, tool calls, and usage.
+
+    `reasoning` holds chain-of-thought (reasoning_content or stripped <think> blocks). It is logged,
+    never sent back to the model.
+    """
 
     text: str
     tool_calls: list[ToolCall]
     usage: Usage
     finish_reason: str | None = None
+    reasoning: str = ""
 
 
 # ---------------------------------------------------------------------------
