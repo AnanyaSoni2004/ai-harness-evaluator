@@ -15,6 +15,7 @@ STATUS_LINES = {
     "unverified": "⚠️ UNVERIFIED CHANGE",
     "no_fix": "❌ NO FIX",
     "error": "⛔ ERROR",
+    "interrupted": "⏹ INTERRUPTED",
 }
 TAIL_LINES = 5
 

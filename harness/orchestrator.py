@@ -22,7 +22,7 @@ from harness.testing import TestRunner, compare
 from harness.textproto import first_json_object
 from harness.tools.exec_tools import run_command
 from harness.tools.registry import build_registry, make_finish_tool
-from harness.types import BudgetExceeded, HarnessError, IssueSpec, Metrics, RunState, TestRun
+from harness.types import BudgetExceeded, ContextOverflow, HarnessError, IssueSpec, Metrics, RunState, TestRun
 from harness.workspace import Workspace
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +34,7 @@ LOCALIZE_FINISH = ({"files": STRS, "symbols": STRS, "root_cause": STR,
 REPRO_FINISH = ({"reproduced": {"type": "boolean"}, "command": STR, "observed": STR}, ["reproduced", "observed"])
 FIX_FINISH = ({"summary": STR, "files_changed": STRS, "tests_added": STRS}, ["summary"])
 TAIL = 1500
+_NO_WORKSPACE = type("NoWorkspace", (), {"diff": staticmethod(lambda: "")})()  # when setup failed
 
 
 def _truthy(value: Any) -> bool:
@@ -105,7 +106,11 @@ class Orchestrator:
     # ------------------------------------------------------------------ phases
     def _intake(self, issue_text: str) -> None:
         with self._timed("intake", "understanding the issue"):
-            obj = self._ask_json("intake", prompts.intake_prompt(issue_text))
+            try:
+                obj = self._ask_json("intake", prompts.intake_prompt(issue_text))
+            except ContextOverflow:
+                obj = None
+                self._note("intake: prompt too large for the model; using the raw issue text")
             if not obj:
                 self._note("intake: no JSON in reply; using the raw issue text")
                 self.state.issue = IssueSpec(raw_text=issue_text, summary=issue_text[:500])
@@ -194,6 +199,8 @@ class Orchestrator:
             self.state.baseline_full = future.result(timeout=max(1.0, self._remaining()))
         except concurrent.futures.TimeoutError:
             self._note("baseline: full test run did not finish within the time budget")
+        except Exception as e:  # noqa: BLE001 - a broken test runner must not end the run
+            self._note(f"baseline: test run failed ({type(e).__name__}: {e}); continuing without a baseline")
 
     def _verify(self, tests_added: list[str]) -> dict:
         with self._timed("verify", "re-running reproduction and tests (no LLM)"):
@@ -237,7 +244,11 @@ class Orchestrator:
 
     def _review(self, v: dict) -> dict:
         with self._timed("review", "critic checks the patch"):
-            obj = self._ask_json("review", prompts.review_prompt(self.state, self.ws.diff(), v)) or {}
+            try:
+                obj = self._ask_json("review", prompts.review_prompt(self.state, self.ws.diff(), v)) or {}
+            except ContextOverflow:
+                obj = {}
+                self._note("review: prompt too large for the model; the reviewer is advisory, so approving")
             verdict = str(obj.get("verdict", "")).lower()
             problems = _strs(obj.get("problems"))
             if verdict != "revise" or not problems:
@@ -299,8 +310,16 @@ class Orchestrator:
         return False
 
     # ------------------------------------------------------------------ finish
-    def _finalize(self, success: bool, budget_hit: bool, error: bool) -> None:
-        if not success:
+    def _finalize(self, success: bool, budget_hit: bool, error: bool, interrupted: bool = False) -> None:
+        if self.ws is None:  # setup itself failed
+            self.state.status = "error"
+            return
+        if interrupted and not any(a.get("passed") for a in self.state.attempts):
+            if self.ws.diff():
+                self.ws.revert_all()
+                self._note("interrupted: unverified changes were reverted")
+            success = False
+        elif not success:
             tried = [a for a in self.state.attempts if a.get("snapshot") is not None]
             best = max(tried, key=lambda a: (a["passed"], a["score"]), default=None)
             if best is not None:
@@ -311,6 +330,8 @@ class Orchestrator:
         self.ws.write_scope = "none"
         if error:
             self.state.status = "error"
+        elif interrupted:
+            self.state.status = "interrupted"
         elif success:
             self.state.status = "verified"
         elif budget_hit:
@@ -321,45 +342,68 @@ class Orchestrator:
     def _write_report(self) -> None:
         self.metrics.ended_at = time.time()
         writer = getattr(report, "write_report", None)
+        ws = self.ws if self.ws is not None else _NO_WORKSPACE
         try:
             if writer is not None:
-                writer(self.state, self.ws, self.metrics, self.run_dir)
+                writer(self.state, ws, self.metrics, self.run_dir)
                 return
         except Exception as e:  # noqa: BLE001 - never crash without a report
             self._note(f"report: writer failed ({type(e).__name__}: {e}); wrote the minimal report")
         state = self.state.to_dict()
         for attempt in state.get("attempts", []):
             attempt.pop("snapshot", None)
-        (self.run_dir / "patch.diff").write_text(redact(self.ws.diff()), encoding="utf-8")
+        (self.run_dir / "patch.diff").write_text(redact(ws.diff()), encoding="utf-8")
         (self.run_dir / "state.json").write_text(redact(json.dumps(state, indent=2, default=str)), encoding="utf-8")
 
+    def _verify_after_budget(self) -> None:
+        """After a budget stop, verify the current changes unless an attempt already verified exactly them."""
+        diff = self.ws.diff()
+        # The budget may run out mid-attempt, before that attempt is recorded.
+        if diff and not any(a.get("verification") and a.get("diff") == diff for a in self.state.attempts):
+            v = self._verify([])
+            self.state.attempts.append({
+                "attempt": len(self.state.attempts) + 1, "kind": "budget", "passed": v["passed"],
+                "score": v["score"], "verification": v, "files": self.ws.edited_files(),
+                "diff": self.ws.diff(), "snapshot": self.ws.snapshot(), "summary": ""})
+
+    def _setup(self, repo: Path, issue_text: str) -> None:
+        """Workspace, test runner, tools and the background baseline (inside solve's protected block)."""
+        scratch = self.run_dir / "scratch"
+        if re.search(r"\s", str(scratch)):  # @scratch/ is expanded textually into shell commands
+            scratch = Path(tempfile.mkdtemp(prefix="harness-scratch-"))
+        self.ws = Workspace(repo, scratch, self.cfg)
+        self.runner = TestRunner(self.ws, self.cfg, self.python_exe)
+        self.registry = build_registry(self.ws, self.cfg, self.runner)
+        self.runner.detect()
+        self.ws.python_exe = self.runner.python()  # `python` in run_command = the test interpreter
+        self._pool = concurrent.futures.ThreadPoolExecutor(1)
+        self._baseline_future = self._pool.submit(self.runner.run, None, self.cfg.tests.baseline_timeout_s)
+
     def solve(self, repo: Path, issue_text: str) -> tuple[RunState, Path]:
-        """Resolve one issue in repo. Always returns the final state and the run directory."""
+        """Resolve one issue in repo. Always returns the final state and the run directory.
+
+        Every failure ends as a status plus a written report. Only KeyboardInterrupt propagates, after the
+        report is written, so the CLI can exit 130.
+        """
         repo = Path(repo).resolve()
         if not repo.is_dir():
             raise HarnessError(f"Repository not found: {repo}")
         self.run_dir = self._run_dir(issue_text)
-        scratch = self.run_dir / "scratch"
-        if re.search(r"\s", str(scratch)):  # @scratch/ is expanded textually into shell commands
-            scratch = Path(tempfile.mkdtemp(prefix="harness-scratch-"))
         self.trajectory = Trajectory(self.run_dir / "trajectory.jsonl")
         self.metrics = Metrics()
         self.llm.metrics = self.metrics
         self.llm.trajectory = self.trajectory
-        self.ws = Workspace(repo, scratch, self.cfg)
-        self.runner = TestRunner(self.ws, self.cfg, self.python_exe)
-        self.registry = build_registry(self.ws, self.cfg, self.runner)
         self.deadline = time.monotonic() + self.cfg.budgets.max_wall_clock_s
         self.state = RunState(run_id=self.run_dir.name, repo=str(repo), issue=IssueSpec(raw_text=issue_text,
                                                                                          summary=issue_text[:500]))
+        self.ws = None
+        self._pool = None
+        self._baseline_future = None
         self.trajectory.log("run_start", repo=str(repo), model=getattr(self.cfg.model, "name", ""),
                             tool_mode=getattr(self.llm, "tool_mode", ""))
-        self.runner.detect()
-        self.ws.python_exe = self.runner.python()  # `python` in run_command = the test interpreter
-        pool = concurrent.futures.ThreadPoolExecutor(1)
-        self._baseline_future = pool.submit(self.runner.run, None, self.cfg.tests.baseline_timeout_s)
-        success = budget_hit = error = False
+        success = budget_hit = error = interrupted = False
         try:
+            self._setup(repo, issue_text)
             self._intake(issue_text)
             self._localize(self._prelocalize())
             self._reproduce()
@@ -369,23 +413,27 @@ class Orchestrator:
         except BudgetExceeded as e:
             budget_hit = True
             self._note(f"budget exhausted: {e}")
-            diff = self.ws.diff()
-            # Verify unless some attempt already verified exactly these changes (the budget may run out
-            # mid-attempt, before that attempt is recorded).
-            if diff and not any(a.get("verification") and a.get("diff") == diff for a in self.state.attempts):
-                v = self._verify([])
-                self.state.attempts.append({
-                    "attempt": len(self.state.attempts) + 1, "kind": "budget", "passed": v["passed"],
-                    "score": v["score"], "verification": v, "files": self.ws.edited_files(),
-                    "diff": self.ws.diff(), "snapshot": self.ws.snapshot(), "summary": ""})
+            try:
+                self._verify_after_budget()
+            except Exception as verify_error:  # noqa: BLE001
+                self._note(f"verification after the budget stop failed: {type(verify_error).__name__}: {verify_error}")
+        except KeyboardInterrupt:
+            interrupted = True
+            self._note("interrupted by the user (Ctrl-C)")
+            raise
         except Exception as e:  # noqa: BLE001 - FatalLLMError or a bug: report it, never crash silently
             error = True
             self._note(f"error: {type(e).__name__}: {e}")
             self.trajectory.log("error", traceback=traceback.format_exc())
         finally:
-            pool.shutdown(wait=False)
+            if self._pool is not None:
+                self._pool.shutdown(wait=False)
             try:
-                self._finalize(success, budget_hit, error)
+                self._finalize(success, budget_hit, error, interrupted)
+            except Exception as e:  # noqa: BLE001 - finalizing must not hide the report
+                self.state.status = "error"
+                self._note(f"finalizing failed: {type(e).__name__}: {e}")
+                self.trajectory.log("error", traceback=traceback.format_exc())
             finally:
                 self._write_report()
                 self.trajectory.log("run_end", status=self.state.status, tokens=self.metrics.total_tokens)

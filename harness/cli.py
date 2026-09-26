@@ -221,6 +221,7 @@ def run_once(cfg: Any, llm: Any, ui: Any, repo: Path, issue: str, strict: bool) 
     """Solve one issue and show the result. Ctrl-C returns 130 after the partial report is written."""
     from harness.orchestrator import Orchestrator
     from harness.report import final_attempt
+    from harness.types import HarnessError
 
     orch = Orchestrator(cfg, llm, ui)
     try:
@@ -229,6 +230,12 @@ def run_once(cfg: Any, llm: Any, ui: Any, repo: Path, issue: str, strict: bool) 
         run_dir = getattr(orch, "run_dir", None)
         ui.error(f"Interrupted — partial report at {run_dir}" if run_dir else "Interrupted")
         return 130
+    except HarnessError:
+        raise
+    except Exception as e:  # noqa: BLE001 - never show a raw traceback to the evaluator
+        run_dir = getattr(orch, "run_dir", None)
+        ui.error(f"Unexpected error: {type(e).__name__}: {e}" + (f" — partial report at {run_dir}" if run_dir else ""))
+        return 1
     diff = orch.ws.diff()
     attempt, _ = final_attempt(state, diff)
     ui.show_verification(attempt, state)
@@ -306,4 +313,7 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except (InputError, HarnessError) as e:
         ui.error(str(e))
+        return 1
+    except Exception as e:  # noqa: BLE001 - never show a raw traceback to the evaluator
+        ui.error(f"Unexpected error: {type(e).__name__}: {e}")
         return 1
