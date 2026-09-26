@@ -6,18 +6,19 @@
 # DeepSeek (reasoner):    name: "deepseek/deepseek-reasoner" api_base: null            context_window: 65536
 # Qwen (DashScope):       name: "dashscope/qwen-max"         api_base: null            context_window: 32768
 # Any OpenAI-compatible:  name: "openai/<served-model-name>"  api_base: "http://<host>:<port>/v1"
+# Qwen (Groq):            name: "groq/qwen/qwen3.8-27b"       api_base: null            context_window: 131072
 #
 # context_window drives the context budgets: working_budget_tokens is capped at 55% of it and
 # max_tool_output_chars at ~6% of it (see harness/config.py), so a 32k model never gets a 48k prompt.
 model:
-  name: "openai/gpt-4o-mini"   # <-- REPLACE with the prescribed model before submission
+  name: "groq/qwen/qwen3.8-27b"  # Qwen served by Groq (the key in AI_API_KEY is a Groq key)
   api_base: null               # set only for OpenAI-compatible endpoints
   temperature: 0.0
   seed: 42
   max_output_tokens: 4096
-  context_window: 128000
+  context_window: 131072
   tool_mode: auto              # auto | native | text  (auto = probe the endpoint once; keep auto)
-  force_text_mode_for: []      # case-insensitive substrings of name that skip the probe and use text mode
+  force_text_mode_for: ["qwen3"]  # case-insensitive substrings of name that skip the probe (see NOTES.md)
   max_consecutive_parse_failures: 3   # end a phase (reason protocol_failure) after this many unparseable replies
   request_timeout_s: 120
   max_retries: 5

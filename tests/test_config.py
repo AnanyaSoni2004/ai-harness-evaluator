@@ -103,7 +103,9 @@ def test_bad_yaml(tmp_path: Path) -> None:
 
 
 def test_force_text_mode_for(tmp_path: Path) -> None:
-    assert load_config().model.force_text_mode_for == []
+    from harness.config import ModelConfig
+    assert ModelConfig().force_text_mode_for == []  # default ships empty
+    assert isinstance(load_config().model.force_text_mode_for, list)
     cfg = load_config(_write(tmp_path, "model:\n  force_text_mode_for: [qwen, deepseek-reasoner]\n"))
     assert cfg.model.force_text_mode_for == ["qwen", "deepseek-reasoner"]
     assert load_config(_write(tmp_path, "model:\n  force_text_mode_for: qwen\n")).model.force_text_mode_for == ["qwen"]

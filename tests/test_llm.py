@@ -60,6 +60,8 @@ def _env(monkeypatch):
 def make_client(monkeypatch, recorder, tool_mode="native", tmp_path=None):
     monkeypatch.setattr(litellm, "completion", recorder)
     cfg = load_config()
+    cfg.model.name = "openai/test-model"  # independent of the model configured in config.yaml
+    cfg.model.force_text_mode_for = []
     cfg.model.tool_mode = tool_mode
     traj = Trajectory(tmp_path / "t.jsonl" if tmp_path else None)
     client = LLMClient(cfg, Metrics(), traj)
@@ -239,6 +241,7 @@ def test_ping_verbose_output(monkeypatch, capsys):
     from harness.cli import main
     rec = Recorder(fake_response(content="I cannot call tools, but: ping ok"), fake_response(content="PONG"))
     monkeypatch.setattr(litellm, "completion", rec)
+    monkeypatch.setenv("HARNESS_MODEL", "openai/test-model")  # not matched by force_text_mode_for
     assert main(["--ping", "--verbose"]) == 0
     out = capsys.readouterr().out
     assert "Endpoint:  (provider default)" in out
