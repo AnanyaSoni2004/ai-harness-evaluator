@@ -104,8 +104,15 @@ class TestRunner:
         self.cfg = cfg
         self.python_exe = python_exe
         self._detected: dict | None = None
+        self._python_cache: str | None = None
 
     # ------------------------------------------------------------------ detection
+    def python(self) -> str:
+        """The interpreter used for Python test runs (cached); the Tracer reuses it."""
+        if self._python_cache is None:
+            self._python_cache = self._python()
+        return self._python_cache
+
     def _python(self) -> str:
         """Interpreter for Python test runs: repo venv, then python3 with pytest, then sys.executable."""
         if self.python_exe:
@@ -146,7 +153,7 @@ class TestRunner:
         if custom:
             return {"kind": "custom", "base_cmd": custom, "supports_targets": "pytest" in custom}
         if self._has_pytest_markers():
-            return {"kind": "pytest", "base_cmd": f"{shlex.quote(self._python())} {PYTEST_FLAGS}",
+            return {"kind": "pytest", "base_cmd": f"{shlex.quote(self.python())} {PYTEST_FLAGS}",
                     "supports_targets": True}
         package = root / "package.json"
         if package.is_file():
@@ -169,7 +176,7 @@ class TestRunner:
                                             re.MULTILINE):
             return {"kind": "make", "base_cmd": "make test", "supports_targets": False}
         if any(p.name.startswith("test") and p.suffix == ".py" for p in self.ws.iter_source_files()):
-            return {"kind": "unittest", "base_cmd": f"{shlex.quote(self._python())} -m unittest discover -q",
+            return {"kind": "unittest", "base_cmd": f"{shlex.quote(self.python())} -m unittest discover -q",
                     "supports_targets": False}
         return {"kind": "unknown", "base_cmd": "", "supports_targets": False}
 

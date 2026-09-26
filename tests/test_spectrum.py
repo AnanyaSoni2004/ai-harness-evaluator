@@ -132,3 +132,115 @@ def test_file_hint_and_score_beat_hints() -> None:
     assert [d["path"] for d in score_lines(runs, hints={"files": ["b.py"]})] == ["b.py", "a.py"]
     stronger = [run("failed", {"a.py": [1], "b.py": [1]}), run("passed", {"b.py": [1]})]
     assert score_lines(stronger, hints={"files": ["b.py"]})[0]["path"] == "a.py"  # score first
+
+
+# ---------------------------------------------------------------- T4: collection on the sample repo
+import shutil  # noqa: E402
+import sys  # noqa: E402
+import time  # noqa: E402
+
+from harness.config import load_config  # noqa: E402
+from harness.spectrum import SpectrumAnalyzer, parse_repro_command  # noqa: E402
+from harness.testing import TestRunner  # noqa: E402
+from harness.types import IssueSpec, RunState, TestRun  # noqa: E402
+
+PY = sys.executable
+SAMPLE = Path(__file__).resolve().parents[1] / "fixtures" / "sample_repo"
+BUG4_REPRO = ("from toolkit.inventory import Inventory\nimport sys\ninv = Inventory()\ninv.add('widget', 2)\n"
+              "try:\n    inv.remove('widget', 5)\nexcept ValueError:\n    sys.exit(0)\n"
+              "print('BUG PRESENT', inv.count('widget'))\nsys.exit(1)\n")
+FIRST_PAGE = "tests/test_paging.py::test_first_page"
+
+
+def test_parse_repro_command(tmp_path: Path) -> None:
+    scratch = tmp_path / "scratch"
+    assert parse_repro_command("python3 @scratch/repro.py", scratch) == ("script", [f"{scratch}/repro.py"])
+    assert parse_repro_command(f'"{PY}" @scratch/repro.py --fast; echo "exit=$?"', scratch) == (
+        "script", [f"{scratch}/repro.py", "--fast"])
+    assert parse_repro_command("python -m pytest tests/x.py::t -x", scratch) == ("pytest", ["tests/x.py::t", "-x"])
+    assert parse_repro_command("pytest tests/x.py", scratch) == ("pytest", ["tests/x.py"])
+    assert parse_repro_command("npm test", scratch) is None
+    assert parse_repro_command("cd sub && python3 r.py", scratch) is None
+    assert parse_repro_command("python3 -c 'print(1)'", scratch) is None
+
+
+def make_analyzer(tmp_path: Path, repro_src: str, **spectrum) -> tuple:
+    repo = tmp_path / "repo"
+    shutil.copytree(SAMPLE, repo)
+    ws = Workspace(repo, tmp_path / "scratch")
+    ws.write_text("@scratch/repro.py", repro_src)
+    cfg = load_config()
+    for key, value in spectrum.items():
+        setattr(cfg.spectrum, key, value)
+    state = RunState(run_id="r", repo=str(repo), issue=IssueSpec(raw_text="x"))
+    state.repro = {"reproduced": True, "command": f'"{PY}" @scratch/repro.py'}
+    state.localization = {"files": ["toolkit/inventory.py"], "symbols": ["Inventory.remove"]}
+    state.targeted_tests = ["tests/test_inventory.py"]
+    state.baseline_full = TestRun("pytest", 1, 15, 1, 0, [FIRST_PAGE], 0.1, False, False, "")
+    return SpectrumAnalyzer(ws, cfg, TestRunner(ws, cfg, python_exe=PY)), state, ws
+
+
+def test_bug4_ranks_inventory_remove_first(tmp_path: Path) -> None:
+    analyzer, state, _ = make_analyzer(tmp_path, BUG4_REPRO)
+    result = analyzer.analyze(state)
+    assert result.ok, result.reason
+    assert result.functions[0]["name"] == "Inventory.remove"
+    assert result.functions[0]["path"] == "toolkit/inventory.py"
+    assert result.failing_runs == 1 and result.passing_runs == 3
+    assert all(not l["path"].startswith("tests/") for l in result.lines)
+
+
+def test_pre_existing_failure_never_a_failing_run(tmp_path: Path) -> None:
+    analyzer, state, _ = make_analyzer(tmp_path, BUG4_REPRO)
+    state.targeted_tests = ["tests/test_paging.py", "tests/test_inventory.py"]
+    result = analyzer.analyze(state)
+    assert result.ok and result.failing_runs == 1  # only the repro
+    assert result.passing_runs == 5  # 3 inventory + 2 paging; test_first_page excluded entirely
+
+
+def test_repro_that_exits_zero(tmp_path: Path) -> None:
+    analyzer, state, _ = make_analyzer(tmp_path, "print('fine')\n")
+    result = analyzer.analyze(state)
+    assert not result.ok and result.reason == "repro did not fail under tracer"
+
+
+def test_timeout_is_bounded(tmp_path: Path) -> None:
+    analyzer, state, _ = make_analyzer(tmp_path, "import time\ntime.sleep(60)\n", timeout_s=3, repro_timeout_s=2)
+    start = time.monotonic()
+    result = analyzer.analyze(state)
+    assert time.monotonic() - start < 3 + 5
+    assert not result.ok and "timed out" in result.reason
+
+
+def test_zero_passing_runs_is_not_a_ranking_of_ties(tmp_path: Path) -> None:
+    analyzer, state, ws = make_analyzer(tmp_path, BUG4_REPRO)
+    shutil.rmtree(ws.repo_root / "tests")  # nothing to contrast against, even after the top-up
+    state.targeted_tests = []
+    result = analyzer.analyze(state)
+    assert not result.ok and result.reason == "only 0 passing runs; no contrast"
+
+
+def test_top_up_when_targeted_tests_are_too_few(tmp_path: Path) -> None:
+    analyzer, state, _ = make_analyzer(tmp_path, BUG4_REPRO)
+    state.targeted_tests = []
+    result = analyzer.analyze(state)
+    assert result.ok and result.passing_runs >= 3
+
+
+@pytest.mark.parametrize("change, reason", [
+    (lambda s, ws, a: setattr(a.scfg, "enabled", False), "disabled"),
+    (lambda s, ws, a: s.repro.update(reproduced=False), "no reproduction"),
+    (lambda s, ws, a: s.repro.update(command="npm test"), "unsupported repro command"),
+    (lambda s, ws, a: ws.write_text("toolkit/stats.py", "X = 1\n"), "repo already modified"),
+])
+def test_skip_reasons(tmp_path: Path, change, reason) -> None:
+    analyzer, state, ws = make_analyzer(tmp_path, BUG4_REPRO)
+    change(state, ws, analyzer)
+    assert analyzer.analyze(state).reason == reason
+
+
+def test_crash_becomes_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    analyzer, state, _ = make_analyzer(tmp_path, BUG4_REPRO)
+    monkeypatch.setattr(analyzer.runner, "detect", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    result = analyzer.analyze(state)
+    assert not result.ok and result.reason == "crashed: RuntimeError: boom" and result.seconds >= 0
