@@ -155,7 +155,7 @@ def test_build_registry(tmp_path: Path) -> None:
     cfg = SimpleNamespace(context=SimpleNamespace(max_tool_output_chars=8000),
                           safety=SimpleNamespace(command_timeout_s=30, allow_edit_existing_tests=False))
     reg = build_registry(ws, cfg)
-    assert reg.names() == ["list_dir", "find_files", "search_code", "view_file",
+    assert reg.names() == ["list_dir", "find_files", "search_code", "view_file", "repo_map",
                            "str_replace", "create_file", "run_command"]
     for schema in reg.openai_schemas():
         params = schema["function"]["parameters"]
