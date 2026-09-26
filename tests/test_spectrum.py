@@ -320,3 +320,14 @@ def test_changed_lines_and_touched_ranks() -> None:
                  {"path": "toolkit/inventory.py", "name": "Inventory.remove", "start": 16, "end": 21}]
     assert touched_ranks(DIFF, functions) == [2]  # context lines 22-23 do not count as touching count()
     assert touched_ranks("", functions) == []
+
+
+def test_exam_score() -> None:
+    from harness.spectrum import exam_score
+    functions = [{"path": "toolkit/inventory.py", "name": n, "start": s, "end": e}
+                 for n, s, e in [("Inventory.count", 23, 25), ("Inventory.remove", 16, 21),
+                                 ("Inventory.add", 10, 14), ("Inventory.__init__", 7, 8)]]
+    assert exam_score({"ok": True, "functions": functions}, DIFF) == 0.5  # remove is rank 2 of 4
+    assert exam_score({"ok": True, "functions": functions[2:]}, DIFF) == 1.0  # fault never ranked
+    assert exam_score({"ok": False, "reason": "x"}, DIFF) is None
+    assert exam_score({"ok": True, "functions": functions}, "") is None

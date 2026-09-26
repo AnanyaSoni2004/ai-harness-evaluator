@@ -344,3 +344,16 @@ def format_suspicious(result: Any, ws: Any, top_lines: int = 10, max_chars: int 
             previous = ln
     out.append(LOW_CONFIDENCE_CLOSING if r.low_confidence else CONFIDENT_CLOSING)
     return truncate("\n".join(out), max_chars, head_chars=max_chars - 400)
+
+
+def exam_score(spectrum: dict, diff: str) -> float | None:
+    """EXAM (lower is better): rank of the first ranked function the patch touches / number ranked.
+
+    None when the Tracer did not produce a ranking or there is no patch; 1.0 when the patch touches no
+    ranked function (the fault was never ranked). Rankings are capped at 200 functions in state.spectrum.
+    """
+    functions = (spectrum or {}).get("functions") or []
+    if not (spectrum or {}).get("ok") or not functions or not diff:
+        return None
+    ranks = touched_ranks(diff, functions)
+    return round(min(ranks) / len(functions), 4) if ranks else 1.0
