@@ -92,7 +92,7 @@ def test_text_mode_view_then_finish(ws, cfg) -> None:
     result = loop.run()
     assert result.finished and result.result == {"summary": "done"}
     system = llm.calls[0][0]["content"]
-    assert system.startswith("You are a test agent.") and "```tool" in system and "- view_file:" in system
+    assert system.startswith("You are a test agent.") and "```tool" in system and "- view_file(" in system
     assert llm.tools_seen == [None, None]  # no native tools in text mode
     second = llm.calls[1]
     assert second[2] == {"role": "assistant", "content": script[0].text}
@@ -207,7 +207,7 @@ def test_forced_finish_text_mode_lists_only_finish(ws, cfg) -> None:
     loop, llm = make_loop(ws, cfg, script, mode="text", max_steps=1)
     assert loop.run().finished
     final_system = llm.calls[-1][0]["content"]
-    assert "- finish:" in final_system and "- view_file:" not in final_system
+    assert "- finish(" in final_system and "- view_file(" not in final_system
 
 
 def test_deadline_passed_forces_finish(ws, cfg) -> None:

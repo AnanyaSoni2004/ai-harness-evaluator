@@ -36,6 +36,35 @@ RETRYABLE = _exc_tuple(["RateLimitError", "APIConnectionError", "Timeout", "Inte
 CONTEXT_ERRORS = _exc_tuple(["ContextWindowExceededError"])
 AUTH_ERRORS = _exc_tuple(["AuthenticationError", "PermissionDeniedError", "NotFoundError"])
 BAD_REQUEST = _exc_tuple(["BadRequestError"])
+RATE_LIMIT = _exc_tuple(["RateLimitError"])
+
+# Provider limits that waiting a minute cannot fix (Groq: "tokens per day (TPD)"; OpenAI: quota).
+_DAILY_LIMIT = re.compile(r"per day|\((?:TPD|RPD)\)|insufficient_quota|exceeded your current quota", re.I)
+# One request asks for more output than the per-minute output limit allows: shrink max_tokens instead.
+_OUTPUT_TOO_LARGE = re.compile(r"Request too large.*?output tokens per minute.*?Limit (\d+)", re.I | re.S)
+_TOO_LARGE = re.compile(r"Request too large", re.I)
+_TRY_AGAIN = re.compile(r"try again in\s+([0-9hms.]+)", re.I)
+_PROVIDER_MESSAGE = re.compile(r'"message"\s*:\s*"([^"]+)"')
+MAX_HINTED_WAIT_S = 90.0
+MIN_MAX_TOKENS = 256
+_MAX_TOKENS_CAP: dict[str, int] = {}  # model name -> max_tokens learned from "Request too large" errors
+
+
+def parse_wait_hint(text: str) -> float | None:
+    """Seconds from 'try again in 1m26.4s' / '32.832s' / '420ms', or None."""
+    m = _TRY_AGAIN.search(text or "")
+    if not m:
+        return None
+    units = {"ms": 0.001, "h": 3600.0, "m": 60.0, "s": 1.0}
+    parts = re.findall(r"(\d+(?:\.\d+)?)(ms|h|m|s)", m.group(1))
+    return sum(float(n) * units[u] for n, u in parts) if parts else None
+
+
+def _provider_message(error: Exception) -> str:
+    """The provider's own error message (short), for notes and warnings."""
+    text = str(error)
+    m = _PROVIDER_MESSAGE.search(text)
+    return (m.group(1) if m else text)[:300]
 
 AUTH_MESSAGE = "Authentication/model error: check AI_API_KEY and model.name in config.yaml"
 
@@ -176,7 +205,7 @@ class LLMClient:
             "api_key": self.cfg.api_key(),
             "api_base": m.api_base,
             "temperature": m.temperature,
-            "max_tokens": m.max_output_tokens,
+            "max_tokens": min(m.max_output_tokens, _MAX_TOKENS_CAP.get(m.name, m.max_output_tokens)),
             "timeout": m.request_timeout_s,
         }
         if m.seed is not None:
@@ -206,6 +235,33 @@ class LLMClient:
                 self.trajectory.log("llm_param_dropped", phase=phase, model=m.name, param=param,
                                     error=str(e)[:300])
                 self.ui.warn(f"Endpoint rejected '{param}'; dropping it for this run")
+            except RATE_LIMIT as e:
+                text = str(e)
+                if _DAILY_LIMIT.search(text):
+                    raise BudgetExceeded(f"provider daily/quota limit reached: {_provider_message(e)}") from e
+                too_large = _OUTPUT_TOO_LARGE.search(text)
+                if too_large:
+                    cap = max(MIN_MAX_TOKENS, int(int(too_large.group(1)) * 0.8))
+                    if kwargs["max_tokens"] > cap:
+                        _MAX_TOKENS_CAP[m.name] = cap
+                        kwargs["max_tokens"] = cap
+                        self.trajectory.log("llm_max_tokens_reduced", phase=phase, model=m.name, max_tokens=cap)
+                        self.ui.warn(f"Provider output limit: max_tokens reduced to {cap} for this run")
+                        continue
+                elif _TOO_LARGE.search(text):
+                    raise ContextOverflow(_provider_message(e)) from e
+                hint = parse_wait_hint(text) or self._retry_after(e)
+                if attempt >= m.max_retries:
+                    raise BudgetExceeded(f"rate limit: still limited after {attempt} retries: "
+                                         f"{_provider_message(e)}") from e
+                if hint is not None and hint > MAX_HINTED_WAIT_S:
+                    raise BudgetExceeded(f"rate limit: provider asks to wait {hint:.0f}s: {_provider_message(e)}") from e
+                delay = (hint + random.uniform(0.2, 1.0)) if hint is not None else min(2 ** attempt, 30) + random.uniform(0, 1)
+                self.trajectory.log("llm_retry", phase=phase, attempt=attempt + 1, error="RateLimitError",
+                                    delay_s=round(delay, 2), hinted=hint is not None)
+                self.ui.warn(f"Rate limited; retrying in {delay:.1f}s" + (" (provider hint)" if hint is not None else ""))
+                self._sleep(delay)
+                attempt += 1
             except RETRYABLE as e:
                 if attempt >= m.max_retries:
                     raise FatalLLMError(f"Model endpoint failed after {attempt} retries: {e}") from e
@@ -215,6 +271,15 @@ class LLMClient:
                 self.ui.warn(f"Model call failed ({type(e).__name__}); retrying in {delay:.1f}s")
                 self._sleep(delay)
                 attempt += 1
+
+    @staticmethod
+    def _retry_after(error: Exception) -> float | None:
+        """Seconds from an HTTP Retry-After header on the provider response, if present."""
+        try:
+            value = getattr(getattr(error, "response", None), "headers", {}).get("retry-after")
+            return float(value) if value is not None else None
+        except (TypeError, ValueError, AttributeError):
+            return None
 
     def _record_usage(self, raw: Any, phase: str) -> Usage:
         """Add the response's token usage to the metrics and return it."""

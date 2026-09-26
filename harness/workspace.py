@@ -59,6 +59,7 @@ class Workspace:
         self.scratch_dir.mkdir(parents=True, exist_ok=True)
         self.cfg = cfg
         self.write_scope = "none"  # "none" | "scratch" | "repo", set per phase by the orchestrator
+        self.python_exe: str | None = None  # the target repo's interpreter (set by the orchestrator)
         self._originals: dict[str, str | None] = {}  # repo-relative path -> content before first edit
 
     # ------------------------------------------------------------------ paths

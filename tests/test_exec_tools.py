@@ -108,3 +108,17 @@ def test_empty_command(ws: Workspace) -> None:
 
 def test_works_without_cfg(ws: Workspace) -> None:
     assert run_command(ws, None, command="echo ok").ok
+
+
+def test_python_shim_uses_target_interpreter(ws: Workspace) -> None:
+    ws.python_exe = sys.executable
+    for name in ("python", "python3"):
+        res = run_command(ws, cfg(), command=f'{name} -c "import sys; print(sys.executable)"')
+        assert res.ok, res.output
+        assert res.output.splitlines()[-1] == sys.executable
+
+
+def test_python_works_without_configured_interpreter(ws: Workspace) -> None:
+    res = run_command(ws, cfg(), command='python -c "print(6 * 7)"')  # macOS has no `python` on PATH
+    assert res.ok and res.output.splitlines()[-1] == "42"
+    assert not (ws.repo_root / ".bin").exists()  # shims live in scratch, never in the repo

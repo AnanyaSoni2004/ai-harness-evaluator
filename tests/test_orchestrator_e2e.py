@@ -163,3 +163,22 @@ def test_e2e_reviewer_revise_then_approve(repo: Path, cfg) -> None:
     assert state.attempts[0]["passed"] and state.attempts[0]["review"]["verdict"] == "revise"
     assert "Reviewer requested changes" in fix_tasks(llm)[1] and "insufficient stock" in fix_tasks(llm)[1]
     assert run_hidden_test(repo) == 0
+
+
+def test_budget_hit_mid_attempt_still_verifies_current_changes(repo: Path, cfg) -> None:
+    """The budget runs out during attempt 2, before it is recorded: its changes must still be verified."""
+    cfg.phases.max_fix_attempts = 2
+    breaks_count = call("str_replace", path="toolkit/inventory.py", old_str="return self._stock.get(item, 0)",
+                        new_str="return self._stock.get(item, 1)")
+    undo = call("str_replace", path="toolkit/inventory.py", old_str="return self._stock.get(item, 1)",
+                new_str="return self._stock.get(item, 0)")
+    script = up_to_fix() + [r(breaks_count), r(call("finish", summary="changed count")),   # attempt 1: fails
+                            r(undo), r(call("str_replace", path="toolkit/inventory.py", old_str=BUGGY, new_str=FIXED))]
+    cfg.budgets.max_llm_calls = len(script)  # the next call (attempt 2's finish) exceeds the budget
+    llm = FakeLLM(script, cfg=cfg)
+    state, run_dir = Orchestrator(cfg, llm, python_exe=PY).solve(repo, ISSUE)
+    assert state.status == "budget_exhausted"
+    last = state.attempts[-1]
+    assert last["kind"] == "budget" and last["passed"] and last["verification"]["repro_after_exit"] == 0
+    assert 'raise ValueError("insufficient stock")' in (run_dir / "patch.diff").read_text()
+    assert run_hidden_test(repo) == 0

@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
+import shutil
 from typing import Any
 
-from harness.shell import run_process, truncate
+from harness.shell import run_process, sanitised_env, truncate
 from harness.tools.read_tools import as_int, never_raises
 from harness.types import ToolResult
 from harness.workspace import Workspace
@@ -39,6 +41,28 @@ def blocked_reason(command: str) -> str | None:
     return None
 
 
+def python_shims(ws: Workspace) -> str | None:
+    """Directory with `python` and `python3` shims for the target repo's interpreter (None if none found).
+
+    Models often call `python`, which does not exist on many systems (macOS has only python3); each miss
+    costs a wasted model call. The shims also make both names use the interpreter the tests use.
+    """
+    base_path = sanitised_env()["PATH"]
+    target = getattr(ws, "python_exe", None) or "python3"
+    resolved = target if os.path.isabs(target) else shutil.which(target, path=base_path)
+    if not resolved:
+        return None
+    shim_dir = ws.scratch_dir / ".bin"
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    script = f'#!/bin/sh\nexec {shlex.quote(resolved)} "$@"\n'
+    for name in ("python", "python3"):
+        shim = shim_dir / name
+        if not shim.exists() or shim.read_text() != script:
+            shim.write_text(script)
+            shim.chmod(0o755)
+    return str(shim_dir)
+
+
 def _cfg_value(cfg: Any, section: str, name: str, default: Any) -> Any:
     """cfg.<section>.<name>, or default when cfg (or the key) is missing."""
     return getattr(getattr(cfg, section, None), name, default) if cfg is not None else default
@@ -63,7 +87,11 @@ def run_command(ws: Workspace, cfg: Any, command: str = "", timeout_s: Any = Non
 
     existing = os.environ.get("PYTHONPATH", "")
     pythonpath = str(ws.repo_root) + (os.pathsep + existing if existing else "")
-    res = run_process(expanded, ws.repo_root, timeout, env_extra={"PYTHONPATH": pythonpath})
+    env = {"PYTHONPATH": pythonpath}
+    shims = python_shims(ws)
+    if shims:
+        env["PATH"] = shims + os.pathsep + sanitised_env()["PATH"]
+    res = run_process(expanded, ws.repo_root, timeout, env_extra=env)
 
     output = res.output.replace(scratch, "@scratch/")
     max_chars = _cfg_value(cfg, "context", "max_tool_output_chars", DEFAULT_MAX_OUTPUT_CHARS)

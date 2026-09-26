@@ -353,6 +353,7 @@ class Orchestrator:
         self.trajectory.log("run_start", repo=str(repo), model=getattr(self.cfg.model, "name", ""),
                             tool_mode=getattr(self.llm, "tool_mode", ""))
         self.runner.detect()
+        self.ws.python_exe = self.runner.python()  # `python` in run_command = the test interpreter
         pool = concurrent.futures.ThreadPoolExecutor(1)
         self._baseline_future = pool.submit(self.runner.run, None, self.cfg.tests.baseline_timeout_s)
         success = budget_hit = error = False
@@ -366,7 +367,10 @@ class Orchestrator:
         except BudgetExceeded as e:
             budget_hit = True
             self._note(f"budget exhausted: {e}")
-            if self.ws.diff() and not any(a.get("verification") for a in self.state.attempts[-1:]):
+            diff = self.ws.diff()
+            # Verify unless some attempt already verified exactly these changes (the budget may run out
+            # mid-attempt, before that attempt is recorded).
+            if diff and not any(a.get("verification") and a.get("diff") == diff for a in self.state.attempts):
                 v = self._verify([])
                 self.state.attempts.append({
                     "attempt": len(self.state.attempts) + 1, "kind": "budget", "passed": v["passed"],

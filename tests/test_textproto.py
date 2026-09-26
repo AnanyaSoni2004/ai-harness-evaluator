@@ -36,11 +36,9 @@ def _one(text: str):
 def test_render_instructions() -> None:
     text = render_tool_instructions(SCHEMAS)
     assert "```tool" in text and '"arguments"' in text
-    assert "- view_file: Show a file with line numbers." in text
-    assert "path (string, required): File path." in text
-    assert "start_line (integer, optional)" in text
-    assert "files (array of string, optional)" in text
-    assert "one of high|low" in text
+    assert "- view_file(path, start_line?: int) — Show a file with line numbers." in text
+    assert "- finish(files?: string[], confidence?: high|low) — End this phase." in text
+    assert "? = optional" in text
 
 
 def test_clean_tool_block() -> None:
@@ -250,11 +248,11 @@ def test_format_example_is_valid_json() -> None:
 
 def test_instructions_contain_parseable_one_shot_example() -> None:
     text = render_tool_instructions(SCHEMAS)
-    block = _re.search(r"Example of a correct reply:\n(```tool\n.*?\n```)", text, _re.DOTALL).group(1)
+    block = _re.search(r"Example:\n(```tool\n.*?\n```)", text, _re.DOTALL).group(1)
     call = _one(block)
     assert call.name == "view_file" and call.arguments == {"path": "<path>"}
     assert len(block) / 3.5 < 80  # cheap: well under ~80 tokens
-    assert "Example of a correct reply" not in render_tool_instructions([])
+    assert "Example:" not in render_tool_instructions([])
 
 
 def test_first_json_object() -> None:

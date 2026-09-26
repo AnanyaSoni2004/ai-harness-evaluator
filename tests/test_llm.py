@@ -55,6 +55,7 @@ def _env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     llm_mod._TOOL_MODE_CACHE.clear()
     llm_mod._DROPPED_PARAMS.clear()
+    llm_mod._MAX_TOKENS_CAP.clear()
 
 
 def make_client(monkeypatch, recorder, tool_mode="native", tmp_path=None):
@@ -301,3 +302,70 @@ def test_unrelated_bad_request_not_retried(monkeypatch):
     with pytest.raises(FatalLLMError):
         make_client(monkeypatch, rec).complete([], None, "fix")
     assert len(rec.kwargs) == 1
+
+
+# ---------------------------------------------------------------- provider rate limits
+def rate_limit(message: str):
+    return litellm.RateLimitError(message=message, llm_provider="groq", model="m")
+
+
+TPD = ('GroqException - {"error":{"message":"Rate limit reached for model `qwen/qwen3.8-27b` in organization '
+       '`org_x` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 198061, Requested 2015. '
+       'Please try again in 32.832s.","type":"tokens","code":"rate_limit_exceeded"}}')
+OTPM = ('GroqException - {"error":{"message":"Request too large for model `qwen/qwen3.8-27b` in organization `org_x` '
+        'service tier `on_demand` on output tokens per minute (OTPM): Limit 1000, Requested 1847. The request\'s '
+        'expected output tokens exceed the enforced limit; reduce max_tokens","type":"tokens"}}')
+TPM = 'Request too large for model `m` on tokens per minute (TPM): Limit 6000, Requested 9000.'
+PER_MINUTE = 'Rate limit reached for model `m` on tokens per minute (TPM): Limit 6000, Used 5900. Please try again in 2m30s.'
+
+
+def test_parse_wait_hint():
+    from harness.llm import parse_wait_hint
+    assert parse_wait_hint("Please try again in 32.832s.") == pytest.approx(32.832)
+    assert parse_wait_hint("try again in 1m26.4s") == pytest.approx(86.4)
+    assert parse_wait_hint("try again in 420ms") == pytest.approx(0.42)
+    assert parse_wait_hint("no hint here") is None
+
+
+def test_daily_limit_stops_immediately(monkeypatch):
+    rec = Recorder(rate_limit(TPD), fake_response(content="never reached"))
+    client = make_client(monkeypatch, rec)
+    delays = []
+    client._sleep = delays.append
+    with pytest.raises(BudgetExceeded, match="daily/quota limit.*tokens per day"):
+        client.complete([], None, "fix")
+    assert len(rec.kwargs) == 1 and delays == []  # no pointless waiting
+
+
+def test_output_too_large_shrinks_max_tokens(monkeypatch):
+    rec = Recorder(rate_limit(OTPM), fake_response(content="ok"), fake_response(content="again"))
+    client = make_client(monkeypatch, rec)
+    delays = []
+    client._sleep = delays.append
+    assert client.complete([], None, "fix").text == "ok"
+    assert rec.kwargs[0]["max_tokens"] == 4096 and rec.kwargs[1]["max_tokens"] == 800 and delays == []
+    client.complete([], None, "fix")
+    assert rec.kwargs[2]["max_tokens"] == 800  # remembered for the rest of the run
+
+
+def test_input_too_large_is_context_overflow(monkeypatch):
+    with pytest.raises(ContextOverflow):
+        make_client(monkeypatch, Recorder(rate_limit(TPM))).complete([], None, "fix")
+
+
+def test_per_minute_limit_uses_provider_hint(monkeypatch):
+    rec = Recorder(rate_limit("Please try again in 7.5s"), fake_response(content="ok"))
+    client = make_client(monkeypatch, rec)
+    delays = []
+    client._sleep = delays.append
+    assert client.complete([], None, "fix").text == "ok"
+    assert len(delays) == 1 and 7.7 <= delays[0] <= 8.5
+
+
+def test_long_hint_or_exhausted_retries_become_budget_exceeded(monkeypatch):
+    with pytest.raises(BudgetExceeded, match="asks to wait 150s"):
+        make_client(monkeypatch, Recorder(rate_limit(PER_MINUTE))).complete([], None, "fix")
+    client = make_client(monkeypatch, Recorder(*[rate_limit("slow down") for _ in range(4)]))
+    client.cfg.model.max_retries = 2
+    with pytest.raises(BudgetExceeded, match="still limited after 2 retries"):
+        client.complete([], None, "fix")

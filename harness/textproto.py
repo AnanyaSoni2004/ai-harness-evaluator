@@ -52,14 +52,24 @@ def strip_reasoning(text: str) -> str:
 
 
 def _type_label(prop: dict) -> str:
-    """Human-readable type for one JSON-schema property."""
-    kind = prop.get("type", "any")
-    if kind == "array":
-        item_type = (prop.get("items") or {}).get("type", "any")
-        kind = f"array of {item_type}"
+    """Compact type for one parameter: '' for strings, 'int', 'bool', 'string[]', 'high|low' for enums."""
     if prop.get("enum"):
-        kind += " one of " + "|".join(str(v) for v in prop["enum"])
-    return kind
+        return "|".join(str(v) for v in prop["enum"])
+    kind = prop.get("type", "string")
+    if kind == "array":
+        return f"{(prop.get('items') or {}).get('type', 'string')}[]"
+    return {"string": "", "integer": "int", "number": "number", "boolean": "bool", "object": "object"}.get(kind, kind)
+
+
+def _signature(fn: dict) -> str:
+    """'view_file(path, start_line?: int, end_line?: int)'; '?' marks optional parameters."""
+    params = fn.get("parameters") or {}
+    required = set(params.get("required") or [])
+    parts = []
+    for pname, prop in (params.get("properties") or {}).items():
+        label = _type_label(prop)
+        parts.append(f"{pname}{'' if pname in required else '?'}{': ' + label if label else ''}")
+    return f"{fn.get('name', '?')}({', '.join(parts)})"
 
 
 def _example_value(pname: str, prop: dict) -> Any:
@@ -93,27 +103,15 @@ def format_example(schema: dict) -> str:
 
 
 def render_tool_instructions(schemas: list[dict]) -> str:
-    """Explain the ```tool block protocol and list every tool with its parameters."""
-    lines = [
-        "TOOLS",
-        "To use a tool, reply with exactly one block (one tool call per reply):",
-        "```tool",
-        '{"name": "<tool>", "arguments": {...}}',
-        "```",
-        "The block must contain valid JSON. You will receive the result in the next message.",
-    ]
+    """Explain the ```tool block protocol and list each tool on one compact line (sent on every call)."""
+    lines = ["TOOLS: reply with exactly one tool call per message, as one block:",
+             "```tool", '{"name": "<tool>", "arguments": {...}}', "```"]
     if schemas:
-        lines += ["Example of a correct reply:", "```tool", json.dumps(example_call(schemas[0])), "```"]
-    lines += ["", "Available tools:"]
+        lines += ["Example:", "```tool", json.dumps(example_call(schemas[0])), "```"]
+    lines.append("Available tools (? = optional):")
     for schema in schemas:
         fn = schema.get("function", schema)
-        lines.append(f"- {fn.get('name', '?')}: {fn.get('description', '').strip()}")
-        params = fn.get("parameters") or {}
-        required = set(params.get("required") or [])
-        for pname, prop in (params.get("properties") or {}).items():
-            flag = "required" if pname in required else "optional"
-            desc = (prop.get("description") or "").strip()
-            lines.append(f"    - {pname} ({_type_label(prop)}, {flag})" + (f": {desc}" if desc else ""))
+        lines.append(f"- {_signature(fn)} — {fn.get('description', '').strip()}")
     return "\n".join(lines)
 
 
