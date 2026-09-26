@@ -1,0 +1,38 @@
+# Model: set name to the organiser-prescribed model (LiteLLM format "<provider>/<model>").
+# The API key is NEVER stored here. It is read from the AI_API_KEY environment variable.
+model:
+  name: "openai/gpt-4o-mini"   # <-- REPLACE with the prescribed model before submission
+  api_base: null               # set only for OpenAI-compatible endpoints
+  temperature: 0.0
+  seed: 42
+  max_output_tokens: 4096
+  context_window: 128000
+  tool_mode: auto              # auto | native | text
+  request_timeout_s: 120
+  max_retries: 5
+budgets:
+  max_total_tokens: 600000
+  max_llm_calls: 120
+  max_wall_clock_s: 1500
+phases:
+  localize_max_steps: 15
+  reproduce_max_steps: 10
+  fix_max_steps: 25
+  max_fix_attempts: 3
+  enable_rescue: true
+  enable_review: true
+context:
+  working_budget_tokens: 48000  # compact history above this
+  max_tool_output_chars: 8000
+  keep_recent_messages: 8
+tests:
+  command: null                 # override auto-detection, e.g. "python3 -m pytest -q"
+  baseline_timeout_s: 600
+  targeted_timeout_s: 180
+  run_full_suite_after_fix: true
+safety:
+  allow_edit_existing_tests: false   # purely additive edits to test files are always allowed
+  command_timeout_s: 120
+output:
+  runs_dir: runs
+  workspaces_dir: null          # null = <system temp>/ai-harness-workspaces (must be OUTSIDE this project)
