@@ -8,7 +8,7 @@ import pytest
 from harness.agent import BLOCKED_REPEAT, FORCE_FINISH, NUDGE, WRAP_UP, AgentLoop
 from harness.config import load_config
 from harness.context import ELIDED_MARKER
-from harness.events import Trajectory
+from harness.events import NullUI, Trajectory
 from harness.llm_fake import FakeLLM
 from harness.textproto import parse_tool_calls
 from harness.tools.registry import build_registry, make_finish_tool
@@ -299,3 +299,17 @@ def test_unparseable_rejected_reply_gets_native_friendly_feedback(ws, cfg) -> No
     assert loop.run().finished
     feedback = llm.calls[1][-1]["content"]
     assert "could not use your last reply" in feedback and "```tool" not in feedback
+
+
+def test_tool_result_preview_skips_echoed_command(ws, cfg) -> None:
+    class Rec(NullUI):
+        def __init__(self) -> None:
+            self.results: list[str] = []
+
+        def tool_result(self, ok: bool, summary: str) -> None:
+            self.results.append(summary)
+    ui = Rec()
+    loop, _ = make_loop(ws, cfg, [resp(call("run_command", command="echo hello")), resp(call("finish", summary="x"))],
+                        ui=ui)
+    loop.run()
+    assert ui.results[0] and not ui.results[0].startswith("$ ")  # the output, not the echoed command line

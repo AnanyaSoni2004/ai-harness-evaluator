@@ -180,7 +180,8 @@ def test_budget_hit_mid_attempt_still_verifies_current_changes(repo: Path, cfg) 
     cfg.budgets.max_llm_calls = len(script)  # the next call (attempt 2's finish) exceeds the budget
     llm = FakeLLM(script, cfg=cfg)
     state, run_dir = Orchestrator(cfg, llm, python_exe=PY).solve(repo, ISSUE)
-    assert state.status == "budget_exhausted"
+    assert state.status == "verified"  # the kept patch passed VERIFY; only REVIEW was cut short
+    assert any("review did not run" in n for n in state.notes)
     last = state.attempts[-1]
     assert last["kind"] == "budget" and last["passed"] and last["verification"]["repro_after_exit"] == 0
     assert 'raise ValueError("insufficient stock")' in (run_dir / "patch.diff").read_text()

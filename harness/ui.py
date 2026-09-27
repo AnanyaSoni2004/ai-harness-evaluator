@@ -57,7 +57,11 @@ class RichUI:
     # ------------------------------------------------------------------ extra views
     def ask(self, question: str) -> str:
         """Read one line from the user."""
-        return self.console.input(f"[bold]{escape(question)}[/bold] ")
+        try:
+            return self.console.input(f"[bold]{escape(question)}[/bold] ")
+        except EOFError:  # Ctrl-D at a prompt means "no answer", not an error
+            self.console.print()
+            return ""
 
     def error(self, msg: str) -> None:
         """Errors are always shown, even in quiet mode."""

@@ -136,7 +136,9 @@ class AgentLoop:
                 # The code changed, so re-running earlier commands is progress, not a loop.
                 self._signatures = {signature: self._signatures[signature]}
         self.metrics.add_tool(self.phase)
-        first_line = result.output.strip().splitlines()[0] if result.output.strip() else ""
+        lines = [l for l in result.output.strip().splitlines() if l.strip()]
+        # Skip the echoed "$ command" line; the → line above already shows the call.
+        first_line = next((l for l in lines if not l.startswith("$ ")), lines[0] if lines else "")
         self.ui.tool_result(result.ok, first_line[:120])
         self.trajectory.log("tool_call", phase=self.phase, name=call.name, arguments=call.arguments,
                             ok=result.ok, output=result.output[:LOG_OUTPUT_CHARS])

@@ -400,7 +400,12 @@ class Orchestrator:
         elif success:
             self.state.status = "verified"
         elif budget_hit:
-            self.state.status = "budget_exhausted"
+            passed = [a for a in self.state.attempts if a.get("passed")]
+            if passed and self.ws.diff() and passed[-1].get("diff") == self.ws.diff():
+                self.state.status = "verified"  # the kept patch passed VERIFY; only REVIEW was cut short
+                self._note("budget ran out after the patch passed verification; review did not run")
+            else:
+                self.state.status = "budget_exhausted"
         else:
             self.state.status = "unverified" if self.ws.diff() else "no_fix"
 

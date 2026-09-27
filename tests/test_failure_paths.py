@@ -233,3 +233,13 @@ def test_unfinished_localize_json_becomes_plain_root_cause() -> None:
     text = '{"finish": {"files": ["a.py"], "root_cause": "regex matches one unit only"}}'
     assert _salvage_localization(text)["root_cause"] == "regex matches one unit only"
     assert _salvage_localization("just prose")["root_cause"] == "just prose"
+
+
+def test_ctrl_d_at_a_prompt_is_no_answer(monkeypatch) -> None:
+    from harness.ui import RichUI
+    ui = RichUI()
+
+    def eof(*_a, **_k):
+        raise EOFError
+    monkeypatch.setattr(ui.console, "input", eof)
+    assert ui.ask("Solve another issue in the same repository? [y/N]") == ""
