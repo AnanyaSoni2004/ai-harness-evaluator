@@ -206,9 +206,8 @@ tokens, before the cuts).
 
 ## Development
 
-- `make test` runs the offline test suite (about 450 tests, about 30 seconds); model calls are scripted with
+- `make test` runs the offline test suite (485 tests, about 40 seconds); model calls are scripted with
   `FakeLLM`, so no API key is needed.
-- `NOTES.md` logs every design decision and deviation from the build plan, with the reason.
 
 ## Team
 

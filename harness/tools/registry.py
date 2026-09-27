@@ -193,7 +193,7 @@ TOOL_SCHEMAS: dict[str, tuple[str, str, dict]] = {
 
 
 def build_registry(ws: Any, cfg: Any, test_runner: Any = None) -> ToolRegistry:
-    """Register every Appendix B tool whose implementation exists (repo_map/run_tests arrive later)."""
+    """Register every built-in tool whose implementation exists, plus run_tests when a test runner is given."""
     from harness import repomap
     from harness.tools import edit_tools, exec_tools, read_tools
 

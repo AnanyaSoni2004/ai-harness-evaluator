@@ -1,4 +1,4 @@
-"""Every prompt template used by the harness (Appendix A)."""
+"""Every prompt template the harness sends to the model."""
 from __future__ import annotations
 
 from typing import Any

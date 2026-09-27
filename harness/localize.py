@@ -68,7 +68,7 @@ def extract_terms(issue_text: str) -> list[tuple[str, float]]:
             _add(terms, order, m.group(0), 2)
     for m in _QUOTED.finditer(text):
         _add(terms, order, m.group(1) or m.group(2), 1)
-    # Deviation (NOTES.md): plain words also count, weakly, so "slugify is broken" still finds slugify.
+    # Plain words also count, weakly, so "slugify is broken" still finds slugify.
     for m in _WORD.finditer(text):
         _add(terms, order, m.group(0), 0.5)
     return sorted(terms.items(), key=lambda kv: (-kv[1], order[kv[0]]))

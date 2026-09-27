@@ -18,7 +18,7 @@ model:
   max_output_tokens: 4096
   context_window: 131072
   tool_mode: auto              # auto | native | text  (auto = probe the endpoint once; keep auto)
-  force_text_mode_for: ["qwen3"]  # case-insensitive substrings of name that skip the probe (see NOTES.md)
+  force_text_mode_for: ["qwen3"]  # case-insensitive substrings of name that skip the probe
   max_consecutive_parse_failures: 3   # end a phase (reason protocol_failure) after this many unparseable replies
   request_timeout_s: 120
   max_retries: 5
@@ -49,7 +49,7 @@ safety:
 output:
   runs_dir: runs
   workspaces_dir: null          # null = <system temp>/ai-harness-workspaces (must be OUTSIDE this project)
-spectrum:                        # Tracer: execution-based fault localization (see NOTES.md)
+spectrum:                        # Tracer: execution-based fault localization
   enabled: true
   formula: ochiai            # ochiai | tarantula
   timeout_s: 120             # total budget for all traced runs
