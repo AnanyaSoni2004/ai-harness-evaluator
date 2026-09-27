@@ -140,20 +140,42 @@ def get_repo(args: argparse.Namespace, cfg: Any, ui: Any, interactive: bool) -> 
         value = ui.ask("Path or git URL of the target repository:")
 
 
-def fetch_github_issue(text: str) -> str | None:
-    """Title + body of a GitHub issue URL via the public API, or None on any failure."""
+def _github_fetch_problem(error: Exception) -> str:
+    """Why a GitHub issue fetch failed, in words the user can act on."""
+    code = getattr(error, "code", None)
+    headers = getattr(error, "headers", None) or {}
+    if code in (403, 429) and (headers.get("x-ratelimit-remaining") == "0" or code == 429):
+        token_hint = "" if os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") else \
+            " (60 requests/hour without a token; set GITHUB_TOKEN for more)"
+        return f"GitHub API rate limit reached{token_hint}"
+    if code == 404:
+        return "issue not found (or the repository is private; set GITHUB_TOKEN)"
+    if code in (401, 403):
+        return f"GitHub refused the request (HTTP {code}); check GITHUB_TOKEN"
+    return f"{type(error).__name__}: {error}"[:200]
+
+
+def fetch_github_issue(text: str) -> tuple[str | None, str]:
+    """(title + body, "") of a GitHub issue URL via the API, or (None, why it failed).
+
+    GITHUB_TOKEN or GH_TOKEN, when set, authenticates the request (private repos, higher rate limit).
+    """
     m = GITHUB_ISSUE_URL.match(text.strip())
     if not m:
-        return None
+        return None, "not a GitHub issue URL"
     api = f"https://api.github.com/repos/{m.group(1)}/{m.group(2)}/issues/{m.group(3)}"
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "ai-coding-harness"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
-        req = urllib.request.Request(api, headers={"Accept": "application/vnd.github+json",
-                                                   "User-Agent": "ai-coding-harness"})
+        req = urllib.request.Request(api, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        return f"{data.get('title', '')}\n\n{data.get('body') or ''}".strip() or None
-    except Exception:  # noqa: BLE001 - any network/API problem means "ask for the text instead"
-        return None
+        issue = f"{data.get('title', '')}\n\n{data.get('body') or ''}".strip()
+        return (issue, "") if issue else (None, "the issue has no title or body")
+    except Exception as e:  # noqa: BLE001 - any network/API problem means "ask for the text instead"
+        return None, _github_fetch_problem(e)
 
 
 def paste_issue(ui: Any) -> str:
@@ -186,12 +208,13 @@ def get_issue(args: argparse.Namespace, ui: Any, interactive: bool, first: bool 
         text = sys.stdin.read()
     while True:
         if text.strip() and GITHUB_ISSUE_URL.match(text.strip()):
-            fetched = fetch_github_issue(text)
+            fetched, problem = fetch_github_issue(text)
             if fetched:
                 return fetched
             if not interactive:
-                raise InputError("Could not fetch that GitHub issue; pass the issue text with --issue-file.")
-            ui.error("Could not fetch that GitHub issue; please paste its text instead.")
+                raise InputError(f"Could not fetch that GitHub issue ({problem}); "
+                                 "pass the issue text with --issue or --issue-file.")
+            ui.error(f"Could not fetch that GitHub issue ({problem}); please paste its text instead.")
             text = ""
         if text.strip():
             return text.strip()

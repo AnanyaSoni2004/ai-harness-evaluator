@@ -86,7 +86,7 @@ def run_command(ws: Workspace, cfg: Any, command: str = "", timeout_s: Any = Non
     timeout = min(requested if requested and requested > 0 else default_timeout, MAX_COMMAND_TIMEOUT_S)
 
     existing = os.environ.get("PYTHONPATH", "")
-    pythonpath = str(ws.repo_root) + (os.pathsep + existing if existing else "")
+    pythonpath = ws.pythonpath() + (os.pathsep + existing if existing else "")
     env = {"PYTHONPATH": pythonpath}
     shims = python_shims(ws)
     if shims:

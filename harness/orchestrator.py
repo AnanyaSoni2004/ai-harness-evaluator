@@ -264,6 +264,8 @@ class Orchestrator:
             return "the bug was not reproduced"
         if v.get("full_after") is None:
             return "the full test suite did not run"
+        if getattr(v["full_after"], "env_problem", False):
+            return "the test suite could not run (import/collection errors), so tests prove nothing"
         if v.get("new_failures"):
             return "new test failures appeared"
         if len(files) > 3:

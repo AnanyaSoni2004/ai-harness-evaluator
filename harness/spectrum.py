@@ -178,7 +178,7 @@ class SpectrumAnalyzer:
                 stale.unlink()
         cmd = " ".join(shlex.quote(p) for p in [py, str(TRACE_RUNNER), "--root", str(self.ws.repo_root),
                                                 "--out", str(out), "--", mode, *args])
-        res = run_process(cmd, self.ws.repo_root, max(1.0, timeout), env_extra={"PYTHONPATH": str(self.ws.repo_root)})
+        res = run_process(cmd, self.ws.repo_root, max(1.0, timeout), env_extra={"PYTHONPATH": self.ws.pythonpath()})
         data = None
         if out.exists():
             data = json.loads(out.read_text(encoding="utf-8"))

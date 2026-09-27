@@ -75,6 +75,14 @@ def test_parse_pytest_without_summary_counts_lines() -> None:
     assert p["failed"] == 2 and len(p["failing_ids"]) == 2
 
 
+def test_parse_pytest_double_quiet_counts_progress() -> None:
+    """addopts = "-q" on top of our -q gives -qq: no summary line, only progress characters."""
+    p = parse_pytest("..........                                     [ 31%]\n......................  [100%]\n", 0)
+    assert (p["passed"], p["failed"], p["errors"]) == (32, 0, 0)
+    p = parse_pytest("...F.E  [100%]\nFAILED tests/t.py::a - x\nERROR tests/t.py::b - y\n", 1)
+    assert (p["passed"], p["failed"], p["errors"]) == (4, 1, 1)
+
+
 def test_parse_pytest_ignores_counts_in_test_output() -> None:
     out = "print: 99 passed things\n" + PASS_OUT
     assert parse_pytest(out, 0)["passed"] == 4
@@ -209,6 +217,7 @@ def test_run_tests_tool_and_registry(tiny: Workspace) -> None:
     assert res.output.splitlines()[1].startswith("0 passed, 1 failed, 0 errors (exit 1")
     assert "Failing: tests/test_calc.py::test_add" in res.output
     assert runner.run_tests_tool("tests/test_other.py").ok
+    assert runner.run_tests_tool(["tests/test_other.py"]).ok  # a JSON list from the model, not "[...]"
     assert "Could not parse targets" in runner.run_tests_tool("'unclosed").output
     cfg = SimpleNamespace(context=SimpleNamespace(max_tool_output_chars=8000),
                           safety=SimpleNamespace(command_timeout_s=30, allow_edit_existing_tests=False))

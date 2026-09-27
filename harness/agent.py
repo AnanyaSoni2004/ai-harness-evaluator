@@ -83,10 +83,18 @@ class AgentLoop:
         return [{"role": "system", "content": self._system(registry)}, {"role": "user", "content": self.task},
                 *self.history]
 
+    def _budget(self) -> int:
+        """History budget: the working budget, or less when the provider caps the prompt size per request."""
+        budget = int(self.cfg.context.working_budget_tokens)
+        cap = getattr(self.llm, "prompt_token_cap", None)
+        return min(budget, int(cap)) if cap else budget
+
     def _compact(self, keep_recent: int) -> None:
         """Compact the stored history in place (system and task are never touched)."""
-        budget = int(self.cfg.context.working_budget_tokens)
+        budget = self._budget()
         compacted = compact(self._messages(self.registry), keep_recent, budget)
+        if estimate_tokens(compacted) > budget and keep_recent > 1:
+            compacted = compact(compacted, 1, budget)  # still too big: shorten everything but the last result
         self.history = compacted[2:]
         self.trajectory.log("context_compacted", phase=self.phase, keep_recent=keep_recent,
                             tokens=estimate_tokens(compacted))
@@ -94,13 +102,14 @@ class AgentLoop:
     def _complete(self, registry: ToolRegistry) -> LLMResponse | None:
         """One model call with compaction; None means the context still overflowed after compacting."""
         messages = self._messages(registry)
-        if estimate_tokens(messages) > self.cfg.context.working_budget_tokens:
+        if estimate_tokens(messages) > self._budget():
             self._compact(self.cfg.context.keep_recent_messages)
             messages = self._messages(registry)
         tools = registry.openai_schemas() if self.native else None
         try:
             return self.llm.complete(messages, tools, self.phase)
         except ContextOverflow:
+            # The client may just have learned a smaller prompt cap, so _budget() is re-read here.
             self._compact(OVERFLOW_KEEP_RECENT)
             try:
                 return self.llm.complete(self._messages(registry), tools, self.phase)

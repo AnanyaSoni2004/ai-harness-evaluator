@@ -56,6 +56,7 @@ def _env(monkeypatch):
     llm_mod._TOOL_MODE_CACHE.clear()
     llm_mod._DROPPED_PARAMS.clear()
     llm_mod._MAX_TOKENS_CAP.clear()
+    llm_mod._PROMPT_TOKEN_CAP.clear()
 
 
 def make_client(monkeypatch, recorder, tool_mode="native", tmp_path=None):
@@ -260,10 +261,21 @@ def test_context_budgets_derived_from_32k_window(tmp_path):
     assert cfg.context.max_tool_output_chars == int(32768 * 0.06 * 3.5) == 6881
 
 
-def test_context_budgets_unchanged_for_large_window():
-    cfg = load_config()  # 128k window: configured budgets are already below the caps
+def test_context_budgets_unchanged_for_large_window(tmp_path):
+    path = tmp_path / "c.yaml"
+    path.write_text("model:\n  context_window: 131072\n")  # configured budgets are already below the caps
+    cfg = load_config(str(path))
     assert cfg.context.working_budget_tokens == 48000
     assert cfg.context.max_tool_output_chars == 8000
+
+
+def test_context_budgets_capped_by_tokens_per_minute(tmp_path):
+    path = tmp_path / "c.yaml"
+    path.write_text("model:\n  context_window: 131072\n  tokens_per_minute: 8000\n")
+    cfg = load_config(str(path))
+    assert cfg.context.working_budget_tokens == int(8000 * 0.7) == 5600
+    assert cfg.context.max_tool_output_chars == int(8000 * 0.2 * 3.5) == 5600
+    assert cfg.spectrum.max_evidence_chars == int(8000 * 0.1 * 3.5) == 2800
 
 
 def test_unsupported_param_dropped_and_retried(monkeypatch, tmp_path):
@@ -351,6 +363,24 @@ def test_output_too_large_shrinks_max_tokens(monkeypatch):
 def test_input_too_large_is_context_overflow(monkeypatch):
     with pytest.raises(ContextOverflow):
         make_client(monkeypatch, Recorder(rate_limit(TPM))).complete([], None, "fix")
+
+
+def test_input_too_large_learns_prompt_cap(monkeypatch):
+    client = make_client(monkeypatch, Recorder(rate_limit(TPM), rate_limit(TPM.replace("6000", "9000"))))
+    client.cfg.model.tokens_per_minute = None
+    assert client.prompt_token_cap is None
+    with pytest.raises(ContextOverflow):
+        client.complete([], None, "fix")
+    assert client.prompt_token_cap == int(6000 * 0.75)
+    with pytest.raises(ContextOverflow):
+        client.complete([], None, "fix")
+    assert client.prompt_token_cap == int(6000 * 0.75)  # a larger limit never loosens a learned cap
+
+
+def test_prompt_cap_from_config(monkeypatch):
+    client = make_client(monkeypatch, Recorder())
+    client.cfg.model.tokens_per_minute = 8000
+    assert client.prompt_token_cap == 6000
 
 
 def test_per_minute_limit_uses_provider_hint(monkeypatch):

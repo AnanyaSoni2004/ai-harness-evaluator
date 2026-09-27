@@ -17,7 +17,9 @@ model:
   seed: 42
   max_output_tokens: 4096
   context_window: 131072
-  tool_mode: auto              # auto | native | text  (auto = probe the endpoint once; keep auto)
+  tokens_per_minute: 8000      # provider input-token rate limit (Groq on_demand for this model); null = unknown.
+                               # One prompt above it is always rejected, so it caps the context budgets.
+  tool_mode: auto             # auto | native | text  (auto = probe the endpoint once; keep auto)
   force_text_mode_for: ["qwen3"]  # case-insensitive substrings of name that skip the probe
   max_consecutive_parse_failures: 3   # end a phase (reason protocol_failure) after this many unparseable replies
   request_timeout_s: 120

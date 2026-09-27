@@ -29,7 +29,8 @@ issue on a copy of `fixtures/sample_repo`), `make eval` (benchmark on all bundle
 | Flags | `.venv/bin/python -m harness --repo <path\|git URL> --issue "..."` or `--issue-file issue.md` |
 
 A git URL (`https://…`, `git@…`, `….git`) is cloned with `--depth 50` into a workspace outside this project.
-An issue that is only a GitHub issue URL is fetched through the GitHub API (title and body). In interactive
+An issue that is only a GitHub issue URL is fetched through the GitHub API (title and body); `GITHUB_TOKEN` or
+`GH_TOKEN`, when set, authenticates the request, and a failed fetch says why (rate limit, not found). In interactive
 mode the harness offers to solve another issue in the same repository afterwards. The fix is left as
 uncommitted changes in the target repository.
 
@@ -92,7 +93,9 @@ The best attempt is kept; if every attempt made things worse, all changes are re
    and our text tool protocol (a ```` ```tool ```` JSON block), which is a first-class path for models whose
    native tool calling is unreliable. Chain-of-thought (`<think>` blocks or `reasoning_content`) is logged but
    never sent back. Parameters an endpoint rejects (`seed`, `temperature`, `tool_choice`) are dropped once.
-   Context budgets derive from the model's context window.
+   Context budgets derive from the model's context window and, when set, its per-minute token limit. A
+   provider "Request too large" on its tokens-per-minute limit is not treated as a full context: the harness
+   learns the limit, compacts the history below it and retries.
 
 ### Execution-based fault localization (Tracer)
 
@@ -157,6 +160,9 @@ endpoint are at the top of the file. Changing the prescribed model is a config e
   `tool_choice`, the harness drops that parameter for the rest of the run and records it in the run's
   `trajectory.jsonl` (`llm_param_dropped`). **If `seed` is unsupported, `temperature: 0.0` alone is our
   reproducibility claim**, and provider-side sampling may still vary slightly between runs.
+- **Provider rate limit:** `model.tokens_per_minute` (8000 for the configured Groq model) caps one prompt's
+  size and the context budgets to fit it: history under 70% of the limit, one tool output under 20%. `null`
+  means unknown; the limit is then learned from the first "Request too large" error.
 - **Budgets:** `budgets.max_total_tokens`, `soft_total_tokens`, `max_llm_calls` and `max_wall_clock_s` per issue; per-phase step
   limits and fix attempts under `phases`; the Tracer under `spectrum`.
 

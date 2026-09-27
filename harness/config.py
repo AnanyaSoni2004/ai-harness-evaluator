@@ -27,6 +27,7 @@ class ModelConfig:
     seed: int | None = 42
     max_output_tokens: int = 4096
     context_window: int = 128000
+    tokens_per_minute: int | None = None  # provider input-token rate limit; None = unknown (learned on error)
     tool_mode: str = "auto"
     force_text_mode_for: list[str] = field(default_factory=list)
     max_consecutive_parse_failures: int = 3
@@ -185,13 +186,22 @@ CHARS_PER_TOKEN = 3.5
 
 
 def derive_context_budgets(cfg: Config) -> None:
-    """Cap context budgets by the model's window: 55% for history, ~6% per tool output."""
+    """Cap context budgets by the model's window (55% for history, ~6% per tool output) and, when set, by
+    model.tokens_per_minute: one prompt above that limit is always rejected, so history stays under 70% of
+    it, one tool output under 20% and the spectrum evidence under 10%.
+    """
     window = int(cfg.model.context_window)
     cfg.context.working_budget_tokens = min(int(cfg.context.working_budget_tokens), int(window * 0.55))
     cfg.context.max_tool_output_chars = min(int(cfg.context.max_tool_output_chars),
                                             int(window * 0.06 * CHARS_PER_TOKEN))
     cfg.spectrum.max_evidence_chars = min(int(cfg.spectrum.max_evidence_chars),
                                           int(window * 0.04 * CHARS_PER_TOKEN))
+    tpm = int(cfg.model.tokens_per_minute or 0)
+    if tpm > 0:
+        cfg.context.working_budget_tokens = min(cfg.context.working_budget_tokens, int(tpm * 0.7))
+        cfg.context.max_tool_output_chars = min(cfg.context.max_tool_output_chars,
+                                                int(tpm * 0.2 * CHARS_PER_TOKEN))
+        cfg.spectrum.max_evidence_chars = min(cfg.spectrum.max_evidence_chars, int(tpm * 0.1 * CHARS_PER_TOKEN))
 
 
 def load_config(path: str | None = None) -> Config:

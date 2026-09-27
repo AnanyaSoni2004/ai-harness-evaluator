@@ -19,6 +19,7 @@ _COUNT = {name: re.compile(rf"(\d+) {name}") for name in ("passed", "failed")}
 _ERRORS = re.compile(r"(\d+) errors?\b")
 _SUMMARY = re.compile(r"\b\d+ (passed|failed|errors?|skipped|deselected|xfailed|xpassed)\b.*\bin [\d.]+s")
 _FAILING = re.compile(r"^(FAILED|ERROR) (\S+)", re.MULTILINE)
+_PROGRESS = re.compile(r"^([.FEsxX]+)\s*(?:\[\s*\d+%\])?\s*$", re.MULTILINE)  # "....F.s  [ 80%]"
 _UNITTEST_RAN = re.compile(r"^Ran (\d+) tests? in", re.MULTILINE)
 _UNITTEST_FAIL = re.compile(r"^(FAIL|ERROR): (\w+) \(([\w.]+)\)", re.MULTILINE)
 _UNITTEST_KV = re.compile(r"(failures|errors|skipped)=(\d+)")
@@ -42,9 +43,11 @@ def parse_pytest(output: str, exit_code: int | None) -> dict:
     passed = int(m.group(1)) if (m := _COUNT["passed"].search(summary)) else 0
     failed = int(m.group(1)) if (m := _COUNT["failed"].search(summary)) else 0
     errors = int(m.group(1)) if (m := _ERRORS.search(summary)) else 0
-    if not summary:  # crashed or timed out before the summary: count what we saw
-        failed = sum(1 for m in _FAILING.finditer(output) if m.group(1) == "FAILED")
-        errors = sum(1 for m in _FAILING.finditer(output) if m.group(1) == "ERROR")
+    if not summary:  # -qq (the repo's addopts adds a second -q), a crash or a timeout: count what we saw
+        progress = "".join(m.group(1) for m in _PROGRESS.finditer(output))
+        passed = progress.count(".")
+        failed = sum(1 for m in _FAILING.finditer(output) if m.group(1) == "FAILED") or progress.count("F")
+        errors = sum(1 for m in _FAILING.finditer(output) if m.group(1) == "ERROR") or progress.count("E")
     collection = "ERROR collecting" in output or "during collection" in output
     env_problem = ("No module named pytest" in output
                    or (collection and bool(re.search(r"\b(ModuleNotFoundError|ImportError)\b", output))))
@@ -196,7 +199,7 @@ class TestRunner:
         if timeout_s is None:
             key = "targeted_timeout_s" if targets else "baseline_timeout_s"
             timeout_s = float(_cfg(self.cfg, "tests", key, 180 if targets else 600))
-        res = run_process(cmd, self.ws.repo_root, timeout_s, env_extra={"PYTHONPATH": str(self.ws.repo_root)})
+        res = run_process(cmd, self.ws.repo_root, timeout_s, env_extra={"PYTHONPATH": self.ws.pythonpath()})
         uses_pytest = info["kind"] == "pytest" or (info["kind"] == "custom" and "pytest" in cmd)
         if uses_pytest:
             parsed = parse_pytest(res.output, res.exit_code)
@@ -208,10 +211,13 @@ class TestRunner:
         return TestRun(command=cmd, exit_code=res.exit_code, duration_s=round(res.duration_s, 3),
                        timed_out=res.timed_out, output_tail=tail, **parsed)
 
-    def run_tests_tool(self, targets: str = "") -> ToolResult:
+    def run_tests_tool(self, targets: str | list = "") -> ToolResult:
         """Tool: run the tests (all, or space-separated files/test IDs) and summarise the result."""
         try:
-            target_list = shlex.split(str(targets or ""))
+            if isinstance(targets, (list, tuple)):  # models often send a JSON list despite the string schema
+                target_list = [str(t).strip() for t in targets if str(t).strip()]
+            else:
+                target_list = shlex.split(str(targets or ""))
         except ValueError as e:
             return ToolResult(False, f"Could not parse targets: {e}")
         try:

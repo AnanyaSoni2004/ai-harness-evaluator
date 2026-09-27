@@ -7,7 +7,7 @@ import pytest
 
 from harness.agent import BLOCKED_REPEAT, FORCE_FINISH, NUDGE, WRAP_UP, AgentLoop
 from harness.config import load_config
-from harness.context import ELIDED_MARKER
+from harness.context import ELIDED_MARKER, estimate_tokens
 from harness.events import NullUI, Trajectory
 from harness.llm_fake import FakeLLM
 from harness.textproto import parse_tool_calls
@@ -158,6 +158,25 @@ def test_context_overflow_compacts_and_retries(ws, cfg) -> None:
     loop2, _ = make_loop(ws, cfg, [overflow_once, overflow_once])
     result = loop2.run()
     assert not result.finished and result.reason == "context_overflow"
+
+
+def test_overflow_compacts_below_learned_prompt_cap(ws, cfg) -> None:
+    """A per-minute 'Request too large' teaches the client a cap far below the working budget; the retry fits."""
+    seen = {}
+
+    def too_large(messages):
+        seen["before"] = estimate_tokens(messages)
+        llm.prompt_token_cap = 700  # what LLMClient learns from the provider's TPM limit
+        raise ContextOverflow("Request too large ... tokens per minute (TPM): Limit 933")
+
+    def finish(messages):
+        seen["after"] = estimate_tokens(messages)
+        return resp(call("finish", summary="ok"))
+
+    script = [resp(call("view_file", path="big.py")), resp(call("view_file", path="a.py")), too_large, finish]
+    loop, llm = make_loop(ws, cfg, script)
+    assert loop.run().finished
+    assert seen["before"] > 700 >= seen["after"]
 
 
 # ---------------------------------------------------------------- loop detection

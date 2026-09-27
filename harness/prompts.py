@@ -107,7 +107,7 @@ def reproduce_task(state: RunState) -> str:
         "issue.\n"
         'It must print "BUG PRESENT" and exit with code 1 while the problem exists, and print "BUG FIXED" and exit 0\n'
         "once it is fixed. For a feature request, check the requested behaviour the same way.\n"
-        "Run it with run_command (cwd = repository root; the repository root is on PYTHONPATH).\n"
+        "Run it with run_command (cwd = repository root; the root, and src/ for a src layout, are on PYTHONPATH).\n"
         "Do not modify repository files (only @scratch/ is writable here; the fix comes in the FIX phase).\n"
         "If a script cannot reproduce it (needs network/UI/credentials), finish with\n"
         "reproduced=false and explain in observed.\n"

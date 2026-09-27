@@ -43,11 +43,16 @@ _DAILY_LIMIT = re.compile(r"per day|\((?:TPD|RPD)\)|insufficient_quota|exceeded 
 # One request asks for more output than the per-minute output limit allows: shrink max_tokens instead.
 _OUTPUT_TOO_LARGE = re.compile(r"Request too large.*?output tokens per minute.*?Limit (\d+)", re.I | re.S)
 _TOO_LARGE = re.compile(r"Request too large", re.I)
+# The per-minute input limit (Groq: "tokens per minute (TPM): Limit 8000"). One prompt above it can never succeed.
+_TPM_LIMIT = re.compile(r"tokens per minute \(TPM\):\s*Limit (\d+)", re.I)
 _TRY_AGAIN = re.compile(r"try again in\s+([0-9hms.]+)", re.I)
 _PROVIDER_MESSAGE = re.compile(r'"message"\s*:\s*"([^"]+)"')
 MAX_HINTED_WAIT_S = 90.0
 MIN_MAX_TOKENS = 256
+# Share of a per-minute token limit one prompt may use: estimate_tokens is approximate, so keep headroom.
+PROMPT_SHARE_OF_TPM = 0.75
 _MAX_TOKENS_CAP: dict[str, int] = {}  # model name -> max_tokens learned from "Request too large" errors
+_PROMPT_TOKEN_CAP: dict[str, int] = {}  # model name -> prompt size learned from input "Request too large" errors
 
 
 # Provider rejected what the model generated (Groq: tool_use_failed, output_parse_failed, ... + failed_generation).
@@ -220,6 +225,16 @@ class LLMClient:
         return info["mode"]
 
     # ------------------------------------------------------------------ calls
+    @property
+    def prompt_token_cap(self) -> int | None:
+        """Largest prompt the provider accepts in one request (model.tokens_per_minute or learned), or None."""
+        caps = [_PROMPT_TOKEN_CAP.get(self.cfg.model.name)]
+        tpm = getattr(self.cfg.model, "tokens_per_minute", None)
+        if tpm:
+            caps.append(int(int(tpm) * PROMPT_SHARE_OF_TPM))
+        known = [c for c in caps if c]
+        return min(known) if known else None
+
     def _check_budget(self) -> None:
         """Raise BudgetExceeded if the run's token or call budget is used up."""
         budgets = self.cfg.budgets
@@ -283,6 +298,16 @@ class LLMClient:
                         self.ui.warn(f"Provider output limit: max_tokens reduced to {cap} for this run")
                         continue
                 elif _TOO_LARGE.search(text):
+                    # Over the per-minute input limit, not the context window: remember the limit so the
+                    # agent compacts below it (retrying the same prompt can never succeed).
+                    tpm = _TPM_LIMIT.search(text)
+                    if tpm:
+                        cap = int(int(tpm.group(1)) * PROMPT_SHARE_OF_TPM)
+                        _PROMPT_TOKEN_CAP[m.name] = min(cap, _PROMPT_TOKEN_CAP.get(m.name, cap))
+                        self.trajectory.log("llm_prompt_cap_learned", phase=phase, model=m.name,
+                                            prompt_tokens=_PROMPT_TOKEN_CAP[m.name])
+                        self.ui.warn(f"Provider per-minute token limit: keeping prompts under "
+                                     f"~{_PROMPT_TOKEN_CAP[m.name]} tokens for this run")
                     raise ContextOverflow(_provider_message(e)) from e
                 hint = parse_wait_hint(text) or self._retry_after(e)
                 if attempt >= m.max_retries:

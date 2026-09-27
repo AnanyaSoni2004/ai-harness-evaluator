@@ -63,6 +63,15 @@ class Workspace:
         self._originals: dict[str, str | None] = {}  # repo-relative path -> content before first edit
 
     # ------------------------------------------------------------------ paths
+    def pythonpath(self) -> str:
+        """PYTHONPATH for the repo's processes: the root, plus src/ for a src layout (src/<pkg>/__init__.py),
+        so an uninstalled src-layout package still imports in tests and reproduction scripts."""
+        paths = [str(self.repo_root)]
+        src = self.repo_root / "src"
+        if src.is_dir() and not (src / "__init__.py").exists() and any(src.glob("*/__init__.py")):
+            paths.append(str(src))
+        return os.pathsep.join(paths)
+
     def resolve(self, path: str | Path) -> Path:
         """Map a model-supplied path to an absolute path; raise ValueError if it escapes the workspace."""
         text = str(path).strip()

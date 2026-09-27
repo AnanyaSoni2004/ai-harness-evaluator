@@ -207,8 +207,31 @@ def test_github_issue_url(monkeypatch) -> None:
     assert seen == [("https://api.github.com/repos/octo/proj/issues/42", 10)]
 
     monkeypatch.setattr(cli.urllib.request, "urlopen", lambda req, timeout: (_ for _ in ()).throw(OSError("offline")))
-    with pytest.raises(cli.InputError, match="Could not fetch"):
+    with pytest.raises(cli.InputError, match="Could not fetch.*offline"):
         cli.get_issue(ns(issue="https://github.com/octo/proj/issues/42"), RichUI(), False)
+
+
+def test_github_issue_rate_limit_and_token(monkeypatch) -> None:
+    import urllib.error
+    from email.message import Message
+
+    headers = Message()
+    headers["x-ratelimit-remaining"] = "0"
+    seen = []
+
+    def limited(req, timeout):
+        seen.append(req.get_header("Authorization"))
+        raise urllib.error.HTTPError(req.full_url, 403, "rate limit exceeded", headers, None)
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", limited)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    with pytest.raises(cli.InputError, match="rate limit reached.*set GITHUB_TOKEN"):
+        cli.get_issue(ns(issue="https://github.com/octo/proj/issues/42"), RichUI(), False)
+    monkeypatch.setenv("GITHUB_TOKEN", "t0ken")
+    with pytest.raises(cli.InputError, match="rate limit reached\\)"):
+        cli.get_issue(ns(issue="https://github.com/octo/proj/issues/42"), RichUI(), False)
+    assert seen == [None, "Bearer t0ken"]
 
 
 def test_git_url_detection() -> None:

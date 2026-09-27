@@ -1,4 +1,5 @@
 """Tests for Workspace: path safety, scratch mapping, edit history, diff, revert, snapshots."""
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -19,6 +20,16 @@ def ws(tmp_path: Path) -> Workspace:
 
 
 # ---------------------------------------------------------------- paths
+def test_pythonpath_adds_src_only_for_src_layout(ws: Workspace) -> None:
+    root = str(ws.repo_root)
+    assert ws.pythonpath() == root
+    (ws.repo_root / "src" / "strkit").mkdir(parents=True)
+    (ws.repo_root / "src" / "strkit" / "__init__.py").write_text("")
+    assert ws.pythonpath().split(os.pathsep) == [root, str(ws.repo_root / "src")]
+    (ws.repo_root / "src" / "__init__.py").write_text("")  # src is itself a package: imported as `src.x`
+    assert ws.pythonpath() == root
+
+
 @pytest.mark.parametrize("bad", ["../outside.txt", "pkg/../../outside.txt", "/etc/passwd", ".git/config",
                                  "pkg/../.git/config", "@scratch/../repo/pkg/mod.py"])
 def test_escape_attempts_rejected(ws: Workspace, bad: str) -> None:

@@ -2,6 +2,7 @@
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -153,6 +154,8 @@ def test_key_echoed_in_errors_never_reaches_artefacts_or_screen(repo: Path, cfg,
 @pytest.mark.parametrize("change, reason", [
     (lambda o, v: o.state.repro.update(reproduced=False), "the bug was not reproduced"),
     (lambda o, v: v.pop("full_after"), "the full test suite did not run"),
+    (lambda o, v: v.update(full_after=SimpleNamespace(env_problem=True)),
+     "the test suite could not run (import/collection errors), so tests prove nothing"),
     (lambda o, v: v.update(new_failures=["t::x"]), "new test failures appeared"),
     (lambda o, v: None, "the patch touches more than 3 files"),
 ])
