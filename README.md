@@ -117,7 +117,7 @@ Every run writes `runs/<timestamp>-<issue words>/`:
 
 | File | Content |
 | --- | --- |
-| `report.md` | status (✅ VERIFIED FIX / ⚠️ UNVERIFIED CHANGE / ❌ NO FIX / ⛔ ERROR), root cause, an evidence table (reproduction exit codes before → after, targeted and full test suite before → after, new failures, fixed tests, review verdict), the Tracer's fault-localization table, an efficiency table per phase, and the patch |
+| `report.md` | status (✅ VERIFIED FIX / ⚠️ UNVERIFIED CHANGE / ❌ NO FIX / ⏹ INTERRUPTED / ⛔ ERROR), root cause, an evidence table (reproduction exit codes before → after, targeted and full test suite before → after, new failures, fixed tests, review verdict), the Tracer's fault-localization table, an efficiency table per phase, and the patch |
 | `patch.diff` | the change, as a unified diff that `git apply` accepts |
 | `metrics.json` | LLM calls, prompt/completion tokens, tool calls and seconds, per phase and in total |
 | `state.json` | the full run state (issue, localization, reproduction, attempts, verification, review, Tracer) |
@@ -125,7 +125,16 @@ Every run writes `runs/<timestamp>-<issue words>/`:
 
 ## Efficiency measures
 
-- Zero-token phases: PRE-LOCALIZE, TRACE, VERIFY and REPORT.
+- Zero-token phases: PRE-LOCALIZE, TRACE, VERIFY and REPORT always make no model calls. LOCALIZE also makes
+  none when the issue contains a traceback naming a repository source file (the innermost repo frame is the
+  location, found in Python), and REVIEW is skipped when verification is unambiguous (bug reproduced and
+  fixed, full suite ran, no new failures, at most 3 files changed); the report says when either was skipped.
+- Small tool outputs: `view_file` shows 80 lines by default (max 200) and an outline plus the first 40 lines of
+  a long file; `search_code` returns at most 25 matches with 3 lines of context; failing tests come back as
+  failing test IDs plus the last 25 lines of output.
+- Per-issue caps: 120k tokens hard, 45k soft (no new fix attempt beyond it), 45 LLM calls, 900 s. Further
+  attempts stop after two empty diffs, two identical diffs (hashed) or two attempts without tool calls. A
+  stopped run ends as UNVERIFIED or NO FIX with the reason in the report, never as an error.
 - Compact text-mode tool instructions, one line per tool (292–436 tokens per call instead of 549–812).
 - History compaction above a working budget derived from the model's context window; all tool output capped.
 - Per-phase step budgets with a "3 calls left" warning and a forced `finish`; loop detection.
@@ -148,7 +157,7 @@ endpoint are at the top of the file. Changing the prescribed model is a config e
   `tool_choice`, the harness drops that parameter for the rest of the run and records it in the run's
   `trajectory.jsonl` (`llm_param_dropped`). **If `seed` is unsupported, `temperature: 0.0` alone is our
   reproducibility claim**, and provider-side sampling may still vary slightly between runs.
-- **Budgets:** `budgets.max_total_tokens`, `max_llm_calls` and `max_wall_clock_s` per issue; per-phase step
+- **Budgets:** `budgets.max_total_tokens`, `soft_total_tokens`, `max_llm_calls` and `max_wall_clock_s` per issue; per-phase step
   limits and fix attempts under `phases`; the Tracer under `spectrum`.
 
 ## Results
@@ -170,6 +179,17 @@ improvements described above, and a full re-run is pending):
 
 Most of the wall-clock time was spent waiting out the free tier's 1,000-output-tokens-per-minute limit.
 
+Effect of the token cuts above, measured on issue 03 with `groq/openai/gpt-oss-20b` (one run each side; the
+free tier's daily limit allowed no more, and model runs vary, so this shows direction, not a precise figure):
+
+| Code | Hidden test | Tokens | LLM calls | LOCALIZE calls |
+| --- | :---: | ---: | ---: | ---: |
+| before the cuts | ❌ (hit the 45-call cap) | 118,006 | 45 | 16 |
+| after the cuts | ✅ | 41,959 | 19 | 0 (from the traceback) |
+
+Other live runs: issue 04 and issue 05 with `groq/openai/gpt-oss-120b` were both solved (62.6k and 63.8k
+tokens, before the cuts).
+
 ## Limitations
 
 - The Tracer works on Python repositories only; other languages still get the full pipeline without it.
@@ -177,6 +197,10 @@ Most of the wall-clock time was spent waiting out the free tier's 1,000-output-t
   pytest and unittest results are parsed per test; other frameworks are judged by exit code.
 - The harness trusts the target repository's own test suite. If a bug has no reproducible symptom and no tests
   cover it, a fix can only be reported as unverified.
+- With no reproduction, VERIFY can only check "no new failures". If the issue's own test was already failing
+  before the change and still fails, VERIFY does not catch it; REVIEW is the only check left.
+- A provider's daily token limit ends the run: the current changes are verified and reported, but no further
+  attempts are made.
 - On rate-limited free tiers (for example Groq's 200,000 tokens per day), a benchmark run can exhaust the daily
   allowance; the harness then stops cleanly and reports what it verified.
 

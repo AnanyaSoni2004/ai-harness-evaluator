@@ -215,3 +215,21 @@ def test_cli_never_shows_a_traceback(repo, cfg, monkeypatch, capsys, tmp_path) -
     monkeypatch.setattr(cli, "make_llm", lambda c, ui: (_ for _ in ()).throw(ValueError("bad endpoint")))
     assert cli.main(["--config", str(config), "--repo", str(repo), "--issue", "x", "--non-interactive"]) == 1
     assert "Unexpected error: ValueError: bad endpoint" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- presentation: no raw provider/JSON noise
+def test_provider_message_drops_account_ids_and_upsell() -> None:
+    from harness.llm import _provider_message
+    raw = ('{"error": {"message": "Rate limit reached for model `m` in organization `org_123` service tier '
+           '`on_demand` on tokens per day (TPD): Limit 200000, Used 199000. Please try again in 9m6s. '
+           'Need more tokens? Upgrade to Dev Tier today at https://example.com"}}')
+    msg = _provider_message(Exception(raw))
+    assert "org_123" not in msg and "on_demand" not in msg and "Upgrade" not in msg
+    assert msg.endswith("Please try again in 9m6s.")
+
+
+def test_unfinished_localize_json_becomes_plain_root_cause() -> None:
+    from harness.orchestrator import _salvage_localization
+    text = '{"finish": {"files": ["a.py"], "root_cause": "regex matches one unit only"}}'
+    assert _salvage_localization(text)["root_cause"] == "regex matches one unit only"
+    assert _salvage_localization("just prose")["root_cause"] == "just prose"

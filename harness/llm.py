@@ -89,7 +89,11 @@ def _provider_message(error: Exception) -> str:
     """The provider's own error message (short), for notes and warnings."""
     text = str(error)
     m = _PROVIDER_MESSAGE.search(text)
-    return (m.group(1) if m else text)[:300]
+    msg = m.group(1) if m else text
+    msg = re.sub(r" in organization `[^`]*`", "", msg)  # account IDs do not belong on screen or in reports
+    msg = re.sub(r" service tier `[^`]*`", "", msg)
+    msg = re.split(r"\s*Need more tokens\?", msg)[0]  # provider upsell text
+    return msg[:300]
 
 AUTH_MESSAGE = "Authentication/model error: check AI_API_KEY and model.name in config.yaml"
 

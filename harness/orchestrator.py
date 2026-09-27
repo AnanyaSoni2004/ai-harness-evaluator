@@ -156,7 +156,7 @@ class Orchestrator:
             steps = self.cfg.phases.localize_max_steps
             res = self._agent("localize", READ_TOOLS, LOCALIZE_FINISH,
                               prompts.localize_task(self.state, repo_map_text, steps), steps)
-            loc = dict(res.result) if res.finished else {"root_cause": str(res.result.get("text", ""))[:1000]}
+            loc = dict(res.result) if res.finished else _salvage_localization(str(res.result.get("text", "")))
             files = [f for f in _strs(loc.get("files")) if (self.ws.repo_root / f).is_file()]
             if not files:
                 files = [c["path"] for c in self.state.candidates[:3]]
@@ -503,3 +503,15 @@ class Orchestrator:
                 self._write_report()
                 self.trajectory.log("run_end", status=self.state.status, tokens=self.metrics.total_tokens)
         return self.state, self.run_dir
+
+
+def _salvage_localization(text: str) -> dict:
+    """An unfinished LOCALIZE reply: use a finish-like JSON object in it if present, else the plain text."""
+    obj = first_json_object(text) or {}
+    if isinstance(obj.get("finish"), dict):
+        obj = obj["finish"]
+    if isinstance(obj.get("arguments"), dict):
+        obj = obj["arguments"]
+    if isinstance(obj.get("root_cause"), str):
+        return dict(obj)
+    return {"root_cause": text[:1000]}
