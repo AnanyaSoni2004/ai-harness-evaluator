@@ -168,7 +168,9 @@ def _format_matches(ws: Workspace, matches: list[tuple[str, int, str]], total: i
 
 def _search_rg(ws: Workspace, rg: str, query: str, regex: bool, root: Path, file_glob: str | None) -> ToolResult:
     """Search with ripgrep; exit code 1 means no matches, 2 means an error."""
-    parts = [rg, "--line-number", "--no-heading", "--color", "never", "--max-columns", "300", "--hidden"]
+    # --with-filename: rg drops the path when searching a single file, and _RG_LINE then matches nothing.
+    parts = [rg, "--line-number", "--no-heading", "--color", "never", "--max-columns", "300", "--hidden",
+             "--with-filename"]
     if not regex:
         parts.append("-F")
     for name in sorted(IGNORED_DIRS):

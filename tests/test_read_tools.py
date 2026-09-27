@@ -157,6 +157,8 @@ def test_search_real_rg(ws: Workspace) -> None:
     assert ">>    1 | def parse(x):" in res.output.splitlines()
     assert "node_modules" not in res.output and ".venv" not in res.output
     assert search_code(ws, None, query="zzz_nothing").output.startswith("No matches")
+    single = search_code(ws, None, query="parse", path="pkg/mod.py")  # rg omits the filename for one file
+    assert single.output.startswith("pkg/mod.py:\n>>    1 | def parse(x):")
 
 
 @pytest.mark.skipif(REAL_RG is None, reason="ripgrep not installed")
@@ -164,7 +166,8 @@ def test_rg_and_python_backends_agree(ws: Workspace, monkeypatch: pytest.MonkeyP
     (ws.repo_root / ".github").mkdir()
     (ws.repo_root / ".github" / "ci.yml").write_text("run: line 1\n")
     queries = [("parse", {}), ("line ", {}), (r"def \w+", {"regex": True}), ("parse", {"file_glob": "*.py"}),
-               ("parse", {"path": "pkg"}), ("zzz_nothing", {})]
+               ("parse", {"path": "pkg"}), ("parse", {"path": "pkg/mod.py"}), ("line 5", {"path": "big.py"}),
+               ("zzz_nothing", {})]
     rg_out = [search_code(ws, None, query=q, **kw).output for q, kw in queries]
     monkeypatch.setattr(read_tools.shutil, "which", lambda name: None)
     py_out = [search_code(ws, None, query=q, **kw).output for q, kw in queries]
