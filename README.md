@@ -212,4 +212,9 @@ tokens, before the cuts).
 
 ## Team
 
-(add team member names)
+**one.ai**
+
+- Pankaj Upadhyay
+- Anuj Upadhyay
+- Ananya Soni
+- Vishuti Jamwal
