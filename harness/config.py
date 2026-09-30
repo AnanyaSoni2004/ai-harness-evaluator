@@ -144,10 +144,15 @@ class Config:
         provider = providers.provider_of(self.model.name)
         native = [(v, providers.env(v)) for v in providers.PROVIDER_KEY_ENV.get(provider, ()) if providers.env(v)]
         key = providers.env("AI_API_KEY")
-        if key and not (native and providers.key_mismatch(key, provider)):
+        mismatch = providers.key_mismatch(key, provider) if key else None
+        if key and not mismatch:
             return key, "AI_API_KEY"
         if native:
             return native[0][1], native[0][0]
+        if key and self.model.api_base:  # a gateway or custom endpoint may accept any provider's key
+            return key, "AI_API_KEY"
+        if key:  # clearly another provider's key for this provider's own endpoint: never send it there
+            raise HarnessError(f"{mismatch} (the key was not sent)")
         if providers.is_local(provider, self.model.api_base):
             return None, "none"
         names = " or ".join(("AI_API_KEY",) + providers.PROVIDER_KEY_ENV.get(provider, ()))

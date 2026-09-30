@@ -56,13 +56,20 @@ HARNESS_API_BASE=http://localhost:8000/v1 make run MODEL=openai/<served-model>  
 - **Per-model settings** (endpoint, context window, per-minute token limit, reasoning effort, text-mode forcing)
   live in the preset and do not leak into other models; for example Groq's 8,000 tokens-per-minute cap applies
   only to `groq`. Adding a preset is a `config.yaml` edit.
-- **A wrong key** fails fast with the provider's reason. If the key's format belongs to another provider, the
-  message says which preset to use; for DashScope it points out that keys are region-specific (`qwen` vs
-  `qwen-cn`).
+- **Errors say what to fix, and stop at once when waiting cannot help.** A rejected key (401), denied access
+  (403, e.g. an unsupported region or a disabled API) or an unknown model (404) ends the run after one request,
+  with the provider's reason. A key whose format belongs to another provider is never sent to this one; the
+  message names the preset to use. For DashScope it points out that keys are region-specific (`qwen` vs
+  `qwen-cn`). An unreachable endpoint is retried twice, then reported with what to check (the internet
+  connection, or whether the local server is running); overloads (5xx) are retried with backoff and rate
+  limits wait as long as the provider asks.
+- **If the model endpoint fails mid-run,** the changes made so far are still verified: a patch that already
+  passed verification ends as ✅ VERIFIED, with the failure noted in the report.
 
-Tested so far: live runs on Groq; Gemini, OpenAI, DashScope and Groq request/response round trips (including
-multi-turn tool calls and Gemini 3 thought signatures) through the real LiteLLM code path with HTTP faked, in
-`tests/test_providers.py`. We had no Gemini, OpenAI or DashScope key for a live run.
+Tested so far: live runs on Groq. For Gemini, OpenAI (Responses API), DashScope and Groq, `make demo` runs end
+to end through the real CLI and LiteLLM against a scripted provider that answers in that provider's own wire
+format (`tests/test_demo_providers.py`), including rate limits, overloads, a lost connection mid-fix, and
+rejected keys, models and regions. We had no Gemini, OpenAI or DashScope key for a live run.
 
 ## Supplying the repository and the issue
 
@@ -267,7 +274,7 @@ tokens, before the cuts).
 
 ## Development
 
-- `make test` runs the offline test suite (530 tests, about 40 seconds); model calls are scripted with
+- `make test` runs the offline test suite (548 tests, about a minute); model calls are scripted with
   `FakeLLM`, so no API key is needed.
 
 ## Team

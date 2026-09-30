@@ -23,7 +23,16 @@ from harness.testing import TestRunner, compare
 from harness.textproto import first_json_object
 from harness.tools.exec_tools import run_command
 from harness.tools.registry import build_registry, make_finish_tool
-from harness.types import BudgetExceeded, ContextOverflow, HarnessError, IssueSpec, Metrics, RunState, TestRun
+from harness.types import (
+    BudgetExceeded,
+    ContextOverflow,
+    FatalLLMError,
+    HarnessError,
+    IssueSpec,
+    Metrics,
+    RunState,
+    TestRun,
+)
 from harness.workspace import Workspace
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -395,15 +404,19 @@ class Orchestrator:
                     self.ws.revert_all()
                     self._note("final: best attempt made things worse; all changes reverted")
         self.ws.write_scope = "none"
-        if error:
+        passed = [a for a in self.state.attempts if a.get("passed")]
+        kept_patch_passed = bool(passed and self.ws.diff() and passed[-1].get("diff") == self.ws.diff())
+        if error and kept_patch_passed and not success:
+            self.state.status = "verified"  # the kept patch passed VERIFY; the model failed afterwards
+            self._note("the model endpoint failed after the patch passed verification; review did not run")
+        elif error:
             self.state.status = "error"
         elif interrupted:
             self.state.status = "interrupted"
         elif success:
             self.state.status = "verified"
         elif budget_hit:
-            passed = [a for a in self.state.attempts if a.get("passed")]
-            if passed and self.ws.diff() and passed[-1].get("diff") == self.ws.diff():
+            if kept_patch_passed:
                 self.state.status = "verified"  # the kept patch passed VERIFY; only REVIEW was cut short
                 self._note("budget ran out after the patch passed verification; review did not run")
             else:
@@ -428,7 +441,10 @@ class Orchestrator:
         (self.run_dir / "state.json").write_text(redact(json.dumps(state, indent=2, default=str)), encoding="utf-8")
 
     def _verify_after_budget(self) -> None:
-        """After a budget stop, verify the current changes unless an attempt already verified exactly them."""
+        """After a budget stop or a model error, verify the current changes unless an attempt already verified
+        exactly them."""
+        if self.ws is None:
+            return
         diff = self.ws.diff()
         # The budget may run out mid-attempt, before that attempt is recorded.
         if diff and not any(a.get("verification") and a.get("diff") == diff for a in self.state.attempts):
@@ -493,7 +509,16 @@ class Orchestrator:
             interrupted = True
             self._note("interrupted by the user (Ctrl-C)")
             raise
-        except Exception as e:  # noqa: BLE001 - FatalLLMError or a bug: report it, never crash silently
+        except FatalLLMError as e:
+            # The model became unreachable; changes made so far may still be a good fix, so verify them.
+            error = True
+            self._note(f"model endpoint failed: {e}")
+            self.trajectory.log("error", traceback=traceback.format_exc())
+            try:
+                self._verify_after_budget()
+            except Exception as verify_error:  # noqa: BLE001
+                self._note(f"verification after the model error failed: {type(verify_error).__name__}: {verify_error}")
+        except Exception as e:  # noqa: BLE001 - a bug: report it, never crash silently
             error = True
             self._note(f"error: {type(e).__name__}: {e}")
             self.trajectory.log("error", traceback=traceback.format_exc())

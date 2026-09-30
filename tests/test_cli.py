@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -255,3 +256,10 @@ def test_clone_local_bare_repo(env) -> None:
     assert (dest / "a.py").read_text() == "x = 1\n"
     with pytest.raises(cli.InputError, match="git clone failed"):
         cli.resolve_repo(str(env["tmp"] / "missing.git"), cfg)
+
+
+def test_two_demos_in_the_same_second_get_separate_workspaces(tmp_path, monkeypatch) -> None:
+    cfg = SimpleNamespace(output=SimpleNamespace(workspaces_dir=str(tmp_path)))
+    first, _ = cli.prepare_demo(cfg)
+    second, _ = cli.prepare_demo(cfg)
+    assert first != second and (second / "toolkit" / "text.py").exists()

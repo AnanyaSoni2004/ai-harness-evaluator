@@ -12,6 +12,7 @@ from harness.llm import LLMClient
 from harness.llm_fake import FakeLLM
 from harness.types import (
     BudgetExceeded,
+    HarnessError,
     ContextOverflow,
     FatalLLMError,
     LLMResponse,
@@ -134,7 +135,7 @@ def test_error_mapping(monkeypatch):
     with pytest.raises(ContextOverflow):
         make_client(monkeypatch, Recorder(ctx)).complete([], None, "fix")
     auth = litellm.AuthenticationError(message="bad key", llm_provider="openai", model="m")
-    with pytest.raises(FatalLLMError, match="check the API key.*Model: openai/test-model"):
+    with pytest.raises(FatalLLMError, match=r"API key rejected by openai \(bad key\); the key was read from AI_API_KEY"):
         make_client(monkeypatch, Recorder(auth)).complete([], None, "fix")
     bad = litellm.BadRequestError(message="weird param", model="m", llm_provider="openai")
     with pytest.raises(FatalLLMError, match="weird param"):
@@ -408,13 +409,16 @@ def test_reasoning_effort_and_default_temperature(monkeypatch):
     assert "reasoning_effort" not in rec.kwargs[2]
 
 
-def test_auth_error_names_the_key_mismatch(monkeypatch):
+def test_another_providers_key_is_not_sent(monkeypatch):
     monkeypatch.setenv("AI_API_KEY", "gsk_fake_key_for_tests")
-    auth = litellm.AuthenticationError(message="API key not valid", llm_provider="gemini", model="m")
-    client = make_client(monkeypatch, Recorder(auth))
+    rec = Recorder(fake_response(content="never"))
+    client = make_client(monkeypatch, rec)
     client.cfg.model.name = "gemini/gemini-3.5-flash"
-    with pytest.raises(FatalLLMError, match="looks like a Groq key.*MODEL=groq"):
+    with pytest.raises(HarnessError, match="looks like a Groq key.*MODEL=groq.*not sent"):
         client.complete([], None, "fix")
+    assert rec.kwargs == []
+    client.cfg.model.api_base = "https://gateway.example.invalid/v1"  # a gateway may take any key
+    assert client.complete([], None, "fix").text == "never"
 
 
 def test_output_too_large_shrinks_max_tokens(monkeypatch):
@@ -507,3 +511,43 @@ def test_output_parse_failed_is_also_feedback(monkeypatch):
     resp = make_client(monkeypatch, Recorder(bad)).complete([], [llm_mod.PING_TOOL], "localize")
     assert resp.finish_reason == "tool_use_failed" and resp.text == "Search tests for remove error."
     assert resp.tool_calls[0].name == "__invalid__" and "could not use your reply" in resp.tool_calls[0].parse_error
+
+
+# ---------------------------------------------------------------- error classification
+def test_provider_message_drops_litellm_wrappers():
+    from harness.llm import _provider_message
+    raw = "litellm.InternalServerError: InternalServerError: DashscopeException - Connection error."
+    assert _provider_message(Exception(raw)) == "Connection error."
+    assert _provider_message(Exception("litellm.Timeout: APITimeoutError - Request timed out.")) == "Request timed out."
+
+
+def test_no_hidden_sdk_retries(monkeypatch):
+    rec = Recorder(fake_response(content="ok"))
+    make_client(monkeypatch, rec).complete([], None, "fix")
+    assert rec.kwargs[0]["max_retries"] == 0
+
+
+def test_dead_connection_gives_up_after_two_retries(monkeypatch):
+    down = litellm.APIConnectionError(message="[Errno 61] Connection refused", llm_provider="openai", model="m")
+    rec = Recorder(down, down, down, fake_response(content="never"))
+    with pytest.raises(FatalLLMError, match="Could not reach the openai API after 2 retries.*internet connection"):
+        make_client(monkeypatch, rec).complete([], None, "fix")
+    assert len(rec.kwargs) == 3
+
+
+def test_dead_local_server_says_so(monkeypatch):
+    down = litellm.APIConnectionError(message="Connection refused", llm_provider="ollama", model="m")
+    client = make_client(monkeypatch, Recorder(down, down, down))
+    client.cfg.model.api_base = "http://localhost:11434"
+    with pytest.raises(FatalLLMError, match="is the local server running at http://localhost:11434"):
+        client.complete([], None, "fix")
+
+
+def test_forbidden_inside_a_bad_request_is_not_retried_or_mistaken_for_no_tools(monkeypatch):
+    body = ('GeminiException BadRequestError - {"error": {"code": 403, "message": "Generative Language API has not '
+            'been used in project 1 before or it is disabled.", "status": "PERMISSION_DENIED"}}')
+    rec = Recorder(litellm.BadRequestError(message=body, model="m", llm_provider="gemini"))
+    client = make_client(monkeypatch, rec, tool_mode="auto")
+    with pytest.raises(FatalLLMError, match="Access denied by openai.*has not been used in project"):
+        client.complete([], [llm_mod.PING_TOOL], "fix")
+    assert len(rec.kwargs) == 1  # the probe stopped: no second request in text mode

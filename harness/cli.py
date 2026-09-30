@@ -110,6 +110,15 @@ def is_git_url(text: str) -> bool:
     return text.startswith(("http://", "https://", "git@")) or text.endswith(".git")
 
 
+def fresh_dir(base: Path, name: str) -> Path:
+    """<base>/<name>-<timestamp>, with -2, -3, ... appended when that already exists (two starts in one second)."""
+    first = base / f"{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    dest, n = first, 2
+    while dest.exists():
+        dest, n = first.with_name(f"{first.name}-{n}"), n + 1
+    return dest
+
+
 def clone_repo(url: str, cfg: Any) -> Path:
     """git clone --depth 50 <url> into <workspaces_dir>/<name>-<timestamp>."""
     from harness.shell import run_process
@@ -117,7 +126,7 @@ def clone_repo(url: str, cfg: Any) -> Path:
     base = Path(cfg.output.workspaces_dir)
     base.mkdir(parents=True, exist_ok=True)
     name = re.sub(r"\.git$", "", url.rstrip("/").split("/")[-1].split(":")[-1]) or "repo"
-    dest = base / f"{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    dest = fresh_dir(base, name)
     res = run_process(f"git clone --depth 50 {shlex.quote(url)} {shlex.quote(str(dest))}", base, 600)
     if res.exit_code != 0 or not dest.is_dir():
         raise InputError(f"git clone failed for {url}:\n{res.output.strip()[-800:]}")
@@ -238,7 +247,7 @@ def prepare_demo(cfg: Any) -> tuple[Path, str]:
     """Copy the bundled sample repo to the workspaces dir and load the first sample issue."""
     if not DEMO_REPO.is_dir() or not DEMO_ISSUE.is_file():
         raise InputError("Demo fixtures not found (fixtures/sample_repo and fixtures/issues/01_slugify.md).")
-    dest = Path(cfg.output.workspaces_dir) / f"demo-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    dest = fresh_dir(Path(cfg.output.workspaces_dir), "demo")
     shutil.copytree(DEMO_REPO, dest)
     return dest, DEMO_ISSUE.read_text(encoding="utf-8")
 

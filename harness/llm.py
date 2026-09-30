@@ -40,6 +40,15 @@ CONTEXT_ERRORS = _exc_tuple(["ContextWindowExceededError"])
 AUTH_ERRORS = _exc_tuple(["AuthenticationError", "PermissionDeniedError", "NotFoundError"])
 BAD_REQUEST = _exc_tuple(["BadRequestError"])
 RATE_LIMIT = _exc_tuple(["RateLimitError"])
+NETWORK_ERRORS = _exc_tuple(["APIConnectionError", "Timeout"])
+# Some providers' network failures arrive as other error types (DashScope: InternalServerError "Connection error.").
+_NETWORK_TEXT = re.compile(r"connection (?:error|refused|reset)|timed out|\[Errno|name resolution|getaddrinfo", re.I)
+# Retrying a dead connection or a timeout rarely helps and each timeout costs request_timeout_s.
+MAX_NETWORK_RETRIES = 2
+# Gemini puts the real HTTP status in the body (a 403 arrives as BadRequestError); others set status_code.
+_BODY_STATUS = re.compile(r'"code"\s*:\s*([45]\d\d)\b')
+# LiteLLM wraps provider text in "litellm.InternalServerError: InternalServerError: OpenAIException - ...".
+_WRAPPER = re.compile(r"^\s*(?:litellm\.)?[A-Za-z_]*(?:Error|Exception|Timeout)(?:\s+[A-Za-z_]*Error)?\s*(?::|-)\s*")
 
 # Provider limits that waiting a minute cannot fix (Groq: "tokens per day (TPD)"; Gemini: quotaId "...PerDay...";
 # OpenAI: insufficient_quota). Gemini's per-minute limits also say "exceeded your current quota": see _is_daily_limit.
@@ -106,17 +115,27 @@ def _is_daily_limit(text: str) -> bool:
     return bool(_QUOTA.search(text)) and not _PER_MINUTE.search(text) and parse_wait_hint(text) is None
 
 
+def _http_status(error: Exception) -> int | None:
+    """The HTTP status behind a LiteLLM error, preferring the one in the provider's body."""
+    m = _BODY_STATUS.search(str(error))
+    if m:
+        return int(m.group(1))
+    code = getattr(error, "status_code", None)
+    return code if isinstance(code, int) else None
+
+
 def _provider_message(error: Exception) -> str:
     """The provider's own error message (short), for notes and warnings."""
     text = str(error)
     m = _PROVIDER_MESSAGE.search(text)
     msg = m.group(1) if m else text
+    while (stripped := _WRAPPER.sub("", msg, count=1)) != msg:
+        msg = stripped
     msg = re.sub(r" in organization `[^`]*`", "", msg)  # account IDs do not belong on screen or in reports
     msg = re.sub(r" service tier `[^`]*`", "", msg)
     msg = re.split(r"\s*Need more tokens\?", msg)[0]  # provider upsell text
     return msg[:300]
 
-AUTH_MESSAGE = "Authentication/model error: check the API key and model.name in config.yaml (or MODEL=...)"
 
 PING_TOOL = {
     "type": "function",
@@ -230,7 +249,9 @@ class LLMClient:
                 info = {"mode": "text", "reason": "provider rejected the model's tool call (tool_use_failed)",
                         "raw": e.generation or str(e)}
             except FatalLLMError as e:
-                if isinstance(e.__cause__, BAD_REQUEST) and not isinstance(e.__cause__, AUTH_ERRORS):
+                cause = e.__cause__
+                if (isinstance(cause, BAD_REQUEST) and not isinstance(cause, AUTH_ERRORS)
+                        and _http_status(cause) not in (401, 403, 404)):
                     info = {"mode": "text", "reason": "endpoint rejected tools (bad request)", "raw": str(e)}
                 else:
                     raise
@@ -259,18 +280,38 @@ class LLMClient:
         if self.metrics.llm_calls >= budgets.max_llm_calls:
             raise BudgetExceeded(f"LLM call budget exhausted ({self.metrics.llm_calls} calls)")
 
-    def _auth_message(self, error: Exception) -> str:
-        """AUTH_MESSAGE plus the provider's reason and a hint when the key belongs to another provider."""
+    def _access_message(self, error: Exception) -> str:
+        """Why the provider refused (bad key, no access, unknown model) and what to do about it."""
         m = self.cfg.model
-        parts = [f"{AUTH_MESSAGE}. Model: {m.name}", _provider_message(error)]
-        key, _ = self.cfg.key_and_source()
-        hint = providers.key_mismatch(key or "", providers.provider_of(m.name))
+        provider = providers.provider_of(m.name) or "the provider"
+        status = _http_status(error)
+        reason = _provider_message(error)
+        key, source = self.cfg.key_and_source()
+        if status == 404 or type(error).__name__ == "NotFoundError":
+            parts = [f"Model not found: {m.name} ({provider}: {reason})",
+                     "check model.name, or choose a preset: make run MODEL=<preset>"]
+        elif status == 403 or type(error).__name__ == "PermissionDeniedError":
+            parts = [f"Access denied by {provider} for {m.name} ({reason})",
+                     "the key may not have access to this model, or the API is disabled or unavailable in your region"]
+        else:
+            parts = [f"API key rejected by {provider} ({reason})", f"the key was read from {source}"]
+        hint = providers.key_mismatch(key or "", provider)
         if hint:
             parts.append(hint)
-        if providers.provider_of(m.name) == "dashscope":
+        if provider == "dashscope":
             parts.append("DashScope keys are region-specific: MODEL=qwen is the international endpoint, "
                          "MODEL=qwen-cn the China one")
-        return " | ".join(p for p in parts if p)
+        return "; ".join(parts)
+
+    def _network_message(self, error: Exception, attempts: int) -> str:
+        """The endpoint could not be reached: say which one and what to check."""
+        m = self.cfg.model
+        provider = providers.provider_of(m.name)
+        where = m.api_base or f"the {provider or m.name} API"
+        advice = (f"is the local server running at {m.api_base}?" if providers.is_local(provider, m.api_base)
+                  else "check the internet connection, proxy or firewall")
+        return (f"Could not reach {where} after {attempts} retries "
+                f"({type(error).__name__}: {_provider_message(error)}); {advice}")
 
     def _call_with_retries(self, messages: list[dict], tools: list[dict] | None, phase: str) -> Any:
         """Call litellm.completion, retrying transient errors and mapping the rest to harness errors."""
@@ -281,6 +322,7 @@ class LLMClient:
             "api_base": m.api_base,
             "max_tokens": min(m.max_output_tokens, _MAX_TOKENS_CAP.get(m.name, m.max_output_tokens)),
             "timeout": m.request_timeout_s,
+            "max_retries": 0,  # the retry loop below is the only one (the OpenAI SDK would retry 2 more times)
         }
         # A local model needs no key, but OpenAI-compatible clients refuse to send a request without one.
         kwargs["api_key"] = self.cfg.api_key() or providers.LOCAL_PLACEHOLDER_KEY
@@ -304,10 +346,12 @@ class LLMClient:
             except CONTEXT_ERRORS as e:
                 raise ContextOverflow(str(e)) from e
             except AUTH_ERRORS as e:
-                raise FatalLLMError(self._auth_message(e)) from e
+                raise FatalLLMError(self._access_message(e)) from e
             except BAD_REQUEST as e:
                 if _REJECTED_GENERATION.search(str(e)):
                     raise ToolUseFailed(_failed_generation(e), _provider_message(e)) from e
+                if _http_status(e) in (401, 403, 404):
+                    raise FatalLLMError(self._access_message(e)) from e
                 param = _rejected_param(str(e), kwargs)
                 if param is None:
                     raise FatalLLMError(str(e)) from e
@@ -355,8 +399,14 @@ class LLMClient:
                 self._sleep(delay)
                 attempt += 1
             except RETRYABLE as e:
+                if _http_status(e) in (401, 403, 404):  # e.g. OpenAI's 403 "region not supported" is an APIError
+                    raise FatalLLMError(self._access_message(e)) from e
+                network = isinstance(e, NETWORK_ERRORS) or bool(_NETWORK_TEXT.search(str(e)))
+                if network and attempt >= min(m.max_retries, MAX_NETWORK_RETRIES):
+                    raise FatalLLMError(self._network_message(e, attempt)) from e
                 if attempt >= m.max_retries:
-                    raise FatalLLMError(f"Model endpoint failed after {attempt} retries: {e}") from e
+                    raise FatalLLMError(f"Model endpoint failed after {attempt} retries "
+                                        f"({type(e).__name__}: {_provider_message(e)})") from e
                 delay = min(2 ** attempt, 30) + random.uniform(0, 1)
                 self.trajectory.log("llm_retry", phase=phase, attempt=attempt + 1,
                                     error=type(e).__name__, delay_s=round(delay, 2))
