@@ -6,7 +6,7 @@ Usage (via `make eval EVAL_ARGS="..."` or directly):
   .venv/bin/python scripts/eval.py --issues 01,04  # a subset
   .venv/bin/python scripts/eval.py --no-spectrum   # Tracer disabled (HARNESS_SPECTRUM=0)
   .venv/bin/python scripts/eval.py --ablation      # every issue with AND without the Tracer
-  .venv/bin/python scripts/eval.py --model groq/openai/gpt-oss-120b --config /tmp/groq.yaml
+  .venv/bin/python scripts/eval.py --model gemini    # a preset from config.yaml, or any LiteLLM model
 
 Writes runs/eval_summary.md (with a with/without comparison table after --ablation) and
 runs/eval-<timestamp>.json. A solved issue means the grader's hidden test passes on the harness's result.
@@ -28,8 +28,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from harness.config import load_config  # noqa: E402
+from harness.providers import KEY_ENV_VARS  # noqa: E402
 from harness.shell import run_process  # noqa: E402
 from harness.spectrum import exam_score  # noqa: E402
+from harness.types import HarnessError  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 HIDDEN_TIMEOUT_S = 120
@@ -97,7 +99,9 @@ def run_issue(issue: Path, mode: str, runs_dir: Path, args: argparse.Namespace, 
         parts += ["--config", args.config]
     if args.model:
         parts += ["--model", args.model]
-    env = {"AI_API_KEY": os.environ.get("AI_API_KEY", ""), "HARNESS_SPECTRUM": "0" if mode == "no-tracer" else "1"}
+    # run_process removes model keys from child processes; the harness itself needs them back.
+    env = {name: os.environ[name] for name in KEY_ENV_VARS if os.environ.get(name)}
+    env["HARNESS_SPECTRUM"] = "0" if mode == "no-tracer" else "1"
     before = set(runs_dir.iterdir()) if runs_dir.exists() else set()
     started = time.monotonic()
     res = run_process(" ".join(shlex.quote(p) for p in parts), ROOT, timeout_s, env_extra=env)
@@ -175,10 +179,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", help="config.yaml to pass to the harness")
     parser.add_argument("--model", help="model override to pass to the harness")
     args = parser.parse_args(argv)
-    if not os.environ.get("AI_API_KEY", "").strip():
-        print('Error: AI_API_KEY is not set. Run: export AI_API_KEY="<key>"')
+    try:
+        cfg = load_config(args.config, model=args.model)
+        cfg.api_key()
+    except HarnessError as e:
+        print(f"Error: {e}")
         return 1
-    cfg = load_config(args.config)
     runs_dir = Path(cfg.output.runs_dir)
     runs_dir = runs_dir if runs_dir.is_absolute() else ROOT / runs_dir
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -197,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"{result.seconds}s){' - ' + result.note if result.note else ''}", flush=True)
             results.append(result)
     print_table(results)
-    model = args.model or cfg.model.name
+    model = cfg.model.name
     (runs_dir / "eval_summary.md").write_text(markdown(results, model), encoding="utf-8")
     stamp = time.strftime("%Y%m%d-%H%M%S")
     (runs_dir / f"eval-{stamp}.json").write_text(json.dumps(

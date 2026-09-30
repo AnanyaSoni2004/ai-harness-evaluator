@@ -134,7 +134,7 @@ def test_error_mapping(monkeypatch):
     with pytest.raises(ContextOverflow):
         make_client(monkeypatch, Recorder(ctx)).complete([], None, "fix")
     auth = litellm.AuthenticationError(message="bad key", llm_provider="openai", model="m")
-    with pytest.raises(FatalLLMError, match="check AI_API_KEY"):
+    with pytest.raises(FatalLLMError, match="check the API key.*Model: openai/test-model"):
         make_client(monkeypatch, Recorder(auth)).complete([], None, "fix")
     bad = litellm.BadRequestError(message="weird param", model="m", llm_provider="openai")
     with pytest.raises(FatalLLMError, match="weird param"):
@@ -347,6 +347,74 @@ def test_daily_limit_stops_immediately(monkeypatch):
     with pytest.raises(BudgetExceeded, match="daily/quota limit.*tokens per day"):
         client.complete([], None, "fix")
     assert len(rec.kwargs) == 1 and delays == []  # no pointless waiting
+
+
+# Gemini says "exceeded your current quota" for per-minute limits too, with a retry delay.
+GEMINI_PER_MINUTE = ('litellm.RateLimitError: GeminiException - {"error": {"code": 429, "message": "You exceeded your '
+                     'current quota, please check your plan and billing details.\\n* Quota exceeded for metric: '
+                     'generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 250000'
+                     '\\nPlease retry in 7.5s.", "status": "RESOURCE_EXHAUSTED", "details": [{"violations": [{"quotaId": '
+                     '"GenerateContentInputTokensPerModelPerMinute-FreeTier"}]}, {"retryDelay": "7s"}]}}')
+GEMINI_PER_DAY = GEMINI_PER_MINUTE.replace("PerMinute", "PerDay").replace("Please retry in 7.5s.", "")
+OPENAI_BILLING = ('OpenAIException - {"error": {"message": "You exceeded your current quota, please check your plan '
+                  'and billing details.", "type": "insufficient_quota", "code": "insufficient_quota"}}')
+OPENAI_TPM = ('OpenAIException - Request too large for gpt-5.4-mini in organization org-x on tokens per min (TPM): '
+              'Limit 30000, Requested 41000.')
+
+
+def test_parse_wait_hint_gemini():
+    from harness.llm import parse_wait_hint
+    assert parse_wait_hint("Please retry in 36.919834337s.") == pytest.approx(36.919834337)
+    assert parse_wait_hint('"retryDelay": "36s"') == pytest.approx(36)
+
+
+def test_gemini_per_minute_quota_waits_and_retries(monkeypatch):
+    rec = Recorder(rate_limit(GEMINI_PER_MINUTE), fake_response(content="ok"))
+    client = make_client(monkeypatch, rec)
+    delays = []
+    client._sleep = delays.append
+    assert client.complete([], None, "fix").text == "ok"
+    assert len(delays) == 1 and 7.5 < delays[0] < 9
+
+
+@pytest.mark.parametrize("message", [GEMINI_PER_DAY, OPENAI_BILLING])
+def test_daily_and_billing_quotas_stop(monkeypatch, message):
+    rec = Recorder(rate_limit(message))
+    client = make_client(monkeypatch, rec)
+    with pytest.raises(BudgetExceeded, match="daily/quota limit"):
+        client.complete([], None, "fix")
+    assert len(rec.kwargs) == 1
+
+
+def test_openai_tpm_wording_is_learned(monkeypatch):
+    rec = Recorder(rate_limit(OPENAI_TPM))
+    client = make_client(monkeypatch, rec)
+    with pytest.raises(ContextOverflow):
+        client.complete([], None, "fix")
+    assert client.prompt_token_cap == 22500
+
+
+def test_reasoning_effort_and_default_temperature(monkeypatch):
+    rec = Recorder(fake_response(content="a"),
+                   litellm.BadRequestError(message="Unsupported parameter: 'reasoning_effort'", model="m",
+                                           llm_provider="openai"),
+                   fake_response(content="b"))
+    client = make_client(monkeypatch, rec)
+    client.cfg.model.temperature = None
+    client.cfg.model.reasoning_effort = "low"
+    client.complete([], None, "fix")
+    assert rec.kwargs[0]["reasoning_effort"] == "low" and "temperature" not in rec.kwargs[0]
+    client.complete([], None, "fix")
+    assert "reasoning_effort" not in rec.kwargs[2]
+
+
+def test_auth_error_names_the_key_mismatch(monkeypatch):
+    monkeypatch.setenv("AI_API_KEY", "gsk_fake_key_for_tests")
+    auth = litellm.AuthenticationError(message="API key not valid", llm_provider="gemini", model="m")
+    client = make_client(monkeypatch, Recorder(auth))
+    client.cfg.model.name = "gemini/gemini-3.5-flash"
+    with pytest.raises(FatalLLMError, match="looks like a Groq key.*MODEL=groq"):
+        client.complete([], None, "fix")
 
 
 def test_output_too_large_shrinks_max_tokens(monkeypatch):

@@ -37,7 +37,15 @@ def _all_module_names() -> list[str]:
     return sorted(names)
 
 
-def self_check(config_path: str | None = None) -> int:
+def describe_model(cfg: Any) -> str:
+    """'gemini/gemini-3.5-flash (preset gemini, --model)' or what to do when no model could be chosen."""
+    if cfg.model.name == "auto":
+        return "auto (no key found yet; export AI_API_KEY, or choose with MODEL=<preset>)"
+    via = f"preset {cfg.model.preset}, {cfg.model.source}" if cfg.model.preset else cfg.model.source
+    return f"{cfg.model.name} ({via})"
+
+
+def self_check(config_path: str | None = None, model: str | None = None) -> int:
     """Import every module and load the config (no key, no network); report optional tools."""
     from harness.config import load_config
     from harness.types import HarnessError
@@ -45,11 +53,12 @@ def self_check(config_path: str | None = None) -> int:
     for name in _all_module_names():
         importlib.import_module(name)
     try:
-        cfg = load_config(config_path)
+        cfg = load_config(config_path, model=model)
     except HarnessError as e:
         print(f"Self-check FAILED: {e}")
         return 1
-    print(f"Model (config.yaml): {cfg.model.name}")
+    print(f"Model: {describe_model(cfg)}")
+    print(f"Presets: {', '.join(cfg.presets) or 'none'}  (choose with: make run MODEL=<preset>)")
     for tool in ("git", "rg", "node"):
         print(f"  {tool:5} {'found' if shutil.which(tool) else 'not found (optional)'}")
     print("Self-check OK")
@@ -72,7 +81,7 @@ def ping(cfg: Any, verbose: bool = False) -> int:
     from harness.types import HarnessError, Metrics
 
     try:
-        cfg.api_key()
+        _, key_source = cfg.key_and_source()
         metrics = Metrics()
         client = LLMClient(cfg, metrics, Trajectory(None))
         mode = client.tool_mode
@@ -80,7 +89,9 @@ def ping(cfg: Any, verbose: bool = False) -> int:
     except HarnessError as e:
         print(f"Ping failed: {e}")
         return 1
-    print(f"Model:     {cfg.model.name}")
+    print(f"Model:     {describe_model(cfg)}")
+    print(f"Key from:  {key_source}")
+    print(f"Context:   {cfg.model.context_window} tokens")
     if verbose:
         info = client.probe_info
         print(f"Endpoint:  {cfg.model.api_base or '(provider default)'}")
@@ -274,7 +285,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--issue", help="issue text")
     p.add_argument("--issue-file", help="file containing the issue text (or a GitHub issue URL)")
     p.add_argument("--config", help="path to config.yaml (default: the project's config.yaml)")
-    p.add_argument("--model", help="override model.name from config.yaml")
+    p.add_argument("--model", help="a preset (groq, gemini, openai, qwen, ...) or a LiteLLM model; overrides "
+                                   "model.name in config.yaml")
     p.add_argument("--non-interactive", action="store_true", help="never prompt; fail if inputs are missing")
     p.add_argument("--quiet", action="store_true", help="print only the final summary")
     p.add_argument("--strict-exit", action="store_true", help="exit 0 verified, 2 unverified/no fix, 1 error")
@@ -296,14 +308,12 @@ def main(argv: list[str] | None = None) -> int:
         print(harness.__version__)
         return 0
     if args.self_check:
-        return self_check(args.config)
+        return self_check(args.config, args.model)
     try:
-        cfg = load_config(args.config)
+        cfg = load_config(args.config, model=args.model)
     except HarnessError as e:
         print(f"Error: {e}")
         return 1
-    if args.model:
-        cfg.model.name = args.model
     if args.ping:
         return ping(cfg, verbose=args.verbose)
     try:

@@ -10,14 +10,59 @@ Built for the LCC × DevClub AI Coding Harness Hackathon 2026.
 
 ```bash
 git clone <this repo> && cd ai-harness-evaluator
-export AI_API_KEY="..."      # the provided key
 make setup     # creates .venv and installs pinned dependencies (needs Python 3.10–3.14, git, make)
+export AI_API_KEY="..."      # a Groq, Gemini, OpenAI, Qwen (DashScope), OpenRouter or DeepSeek key
+make ping      # one tiny request: shows which model and key were picked, and that they work
 make run       # launches the harness; it then asks for the target repository and the issue
 make test      # optional: our offline test suite (no API key needed)
 ```
 
-Other targets: `make ping` (one tiny request, to check the key and model), `make demo` (fixes a bundled sample
-issue on a copy of `fixtures/sample_repo`), `make eval` (benchmark on all bundled issues), `make clean`.
+The provider is detected from the key's format where that is unambiguous; otherwise choose it with `MODEL=`
+(see [Choosing a model](#choosing-a-model)), e.g. `make run MODEL=qwen`. Other targets: `make demo` (fixes a
+bundled sample issue on a copy of `fixtures/sample_repo`), `make eval` (benchmark on all bundled issues),
+`make clean`. Every target that calls a model accepts `MODEL=`.
+
+## Choosing a model
+
+`MODEL=` takes a preset from `config.yaml` or any LiteLLM model string (`<provider>/<model>`). It works on
+`make run`, `ping`, `demo` and `eval`, and as `--model` on `python -m harness`.
+
+| Preset | Model | Key (`AI_API_KEY`, or the provider's own variable) |
+| --- | --- | --- |
+| `groq` | `groq/qwen/qwen3.8-27b` | `gsk_…` or `GROQ_API_KEY` |
+| `gemini` | `gemini/gemini-3.5-flash` | `AIza…` (Google AI Studio) or `GEMINI_API_KEY` |
+| `openai` | `openai/gpt-5.4-mini` | `sk-proj-…` or `OPENAI_API_KEY` |
+| `qwen` | `dashscope/qwen3-coder-plus`, international endpoint | Alibaba Model Studio key or `DASHSCOPE_API_KEY` |
+| `qwen-cn` | the same model, China (Beijing) endpoint | a key from the China region |
+| `openrouter` | `openrouter/qwen/qwen3-coder` | `sk-or-…` or `OPENROUTER_API_KEY` |
+| `deepseek` | `deepseek/deepseek-chat` | `DEEPSEEK_API_KEY` |
+| `ollama` | `ollama_chat/qwen3:8b` on this machine | none (`ollama pull qwen3:8b` first) |
+
+```bash
+make run MODEL=gemini                          # a preset
+make run MODEL=openai/gpt-5.4                  # any LiteLLM model; its context window comes from LiteLLM
+GEMINI_API_KEY=... make run                    # no AI_API_KEY: the provider variable that is set picks the preset
+HARNESS_API_BASE=http://localhost:8000/v1 make run MODEL=openai/<served-model>   # vLLM, LM Studio, ...
+```
+
+- **How the model is chosen:** `MODEL=`/`--model`, then `HARNESS_MODEL`, then `model.name` in `config.yaml`.
+  The shipped `model.name: auto` picks the preset from `AI_API_KEY`'s prefix (`gsk_` Groq, `AIza` Gemini,
+  `sk-proj-` OpenAI, `sk-or-` OpenRouter). A plain `sk-…` key is issued by OpenAI, DashScope and DeepSeek alike,
+  so the harness asks for `MODEL=` instead of guessing.
+- **Which key is used:** `AI_API_KEY`, else the provider's own variable (`GEMINI_API_KEY`, `OPENAI_API_KEY`,
+  `DASHSCOPE_API_KEY`, …). If `AI_API_KEY` is clearly another provider's key and the provider's own variable is
+  set, the latter wins. Local models (Ollama, or any `localhost` endpoint) need none. `make ping` prints the
+  model, where it came from, the key's variable and the context window.
+- **Per-model settings** (endpoint, context window, per-minute token limit, reasoning effort, text-mode forcing)
+  live in the preset and do not leak into other models; for example Groq's 8,000 tokens-per-minute cap applies
+  only to `groq`. Adding a preset is a `config.yaml` edit.
+- **A wrong key** fails fast with the provider's reason. If the key's format belongs to another provider, the
+  message says which preset to use; for DashScope it points out that keys are region-specific (`qwen` vs
+  `qwen-cn`).
+
+Tested so far: live runs on Groq; Gemini, OpenAI, DashScope and Groq request/response round trips (including
+multi-turn tool calls and Gemini 3 thought signatures) through the real LiteLLM code path with HTTP faked, in
+`tests/test_providers.py`. We had no Gemini, OpenAI or DashScope key for a live run.
 
 ## Supplying the repository and the issue
 
@@ -63,6 +108,7 @@ The best attempt is kept; if every attempt made things worse, all changes are re
 | `harness/orchestrator.py` | phase state machine, budgets, attempts, rescue |
 | `harness/agent.py` | one phase of tool-using conversation (loop detection, forced finish, protocol-failure limit) |
 | `harness/llm.py` | LiteLLM client: tool-mode probe, retries honouring provider hints, reasoning stripping |
+| `harness/providers.py` | per-provider key variables, key-format detection, local endpoints, context-window lookup |
 | `harness/tools/` | `list_dir`, `find_files`, `search_code`, `view_file`, `repo_map`, `str_replace`, `create_file`, `run_command`, `run_tests` |
 | `harness/workspace.py` | path safety, `@scratch/`, edit history, diff, revert, snapshots |
 | `harness/testing.py` | test-framework detection, runs, parsing, before/after comparison |
@@ -89,7 +135,9 @@ The best attempt is kept; if every attempt made things worse, all changes are re
    the run cleanly and still verify and report the current changes; tool calls the provider rejects become
    feedback for the model; unparseable replies end a phase after three in a row instead of burning budget.
    A run always ends with a report and never leaves the repository worse than it found it.
-6. **Provider-agnostic.** LiteLLM reaches any provider. A one-time probe decides between native tool calling
+6. **Provider-agnostic.** LiteLLM reaches any provider; presets carry each model's own settings, and rate-limit
+   messages are read in Groq's, OpenAI's and Gemini's wording (Gemini's per-minute "exceeded your current quota"
+   is waited out, its per-day quota ends the run). A one-time probe decides between native tool calling
    and our text tool protocol (a ```` ```tool ```` JSON block), which is a first-class path for models whose
    native tool calling is unreliable. Chain-of-thought (`<think>` blocks or `reasoning_content`) is logged but
    never sent back. Parameters an endpoint rejects (`seed`, `temperature`, `tool_choice`) are dropped once.
@@ -146,23 +194,30 @@ Every run writes `runs/<timestamp>-<issue words>/`:
 
 ## Configuration
 
-Everything that affects output lives in `config.yaml`. The model is `model.name` in LiteLLM format
-(`<provider>/<model>`); ready-to-use profiles for DeepSeek, Qwen (DashScope, Groq) and any OpenAI-compatible
-endpoint are at the top of the file. Changing the prescribed model is a config edit, never a code edit.
+Everything that affects output lives in `config.yaml`. The model is `model.name`: a preset from the `presets`
+section, a LiteLLM model string (`<provider>/<model>`), or `auto` (see [Choosing a model](#choosing-a-model)).
+Changing the model is a config edit or `MODEL=`, never a code edit.
 
-- **API key:** read only from the `AI_API_KEY` environment variable. It is never written to any file, never
-  logged (it is redacted from every trajectory line), and never passed to the target repository's processes.
-  `.env.example` contains only `AI_API_KEY=`.
-- **Tool mode:** `model.tool_mode: auto` probes the endpoint once. `model.force_text_mode_for` lists model-name
-  substrings that always use the text protocol; it contains `qwen3`, because Groq's native tool calling for
-  `qwen/qwen3.8-27b` proved unreliable in live probing.
-- **Determinism:** `temperature: 0.0` and `seed: 42`. When an endpoint rejects `seed`, `temperature` or
-  `tool_choice`, the harness drops that parameter for the rest of the run and records it in the run's
-  `trajectory.jsonl` (`llm_param_dropped`). **If `seed` is unsupported, `temperature: 0.0` alone is our
-  reproducibility claim**, and provider-side sampling may still vary slightly between runs.
-- **Provider rate limit:** `model.tokens_per_minute` (8000 for the configured Groq model) caps one prompt's
-  size and the context budgets to fit it: history under 70% of the limit, one tool output under 20%. `null`
-  means unknown; the limit is then learned from the first "Request too large" error.
+- **API key:** read only from the environment: `AI_API_KEY`, or the provider's own variable. Keys are never
+  written to any file, never logged (every key variable's value is redacted from every trajectory line), and
+  never passed to the target repository's processes. `.env.example` contains only `AI_API_KEY=`, and
+  `config.yaml`, presets included, refuses anything that looks like a secret.
+- **Context window:** `model.context_window: null` reads the window from LiteLLM's model table (32,768 when the
+  model is unknown, e.g. a custom endpoint); the context budgets derive from it.
+- **Tool mode:** `model.tool_mode: auto` probes the endpoint once. `force_text_mode_for` lists model-name
+  substrings that always use the text protocol; the `groq` preset sets `qwen3`, because Groq's native tool
+  calling for `qwen/qwen3.8-27b` proved unreliable in live probing.
+- **Determinism:** `temperature: 0.0` and `seed: 42`. When an endpoint rejects `seed`, `temperature`,
+  `tool_choice` or `reasoning_effort`, the harness drops that parameter for the rest of the run and records it
+  in the run's `trajectory.jsonl` (`llm_param_dropped`). **If `seed` is unsupported, `temperature: 0.0` alone is
+  our reproducibility claim**, and provider-side sampling may still vary slightly between runs. The `gemini` and
+  `openai` presets leave temperature at the provider default: OpenAI's reasoning models accept no other value,
+  and Google advises against lowering it for Gemini 3. For those two, runs are not reproducible.
+- **Reasoning models:** `reasoning_effort: low` in the `gemini` and `openai` presets, with 8,192 output tokens,
+  because hidden reasoning counts against the output limit.
+- **Provider rate limit:** `model.tokens_per_minute` (8000 in the `groq` preset) caps one prompt's size and the
+  context budgets to fit it: history under 70% of the limit, one tool output under 20%. `null` means unknown;
+  the limit is then learned from the first "Request too large" error.
 - **Budgets:** `budgets.max_total_tokens`, `soft_total_tokens`, `max_llm_calls` and `max_wall_clock_s` per issue; per-phase step
   limits and fix attempts under `phases`; the Tracer under `spectrum`.
 
@@ -212,7 +267,7 @@ tokens, before the cuts).
 
 ## Development
 
-- `make test` runs the offline test suite (485 tests, about 40 seconds); model calls are scripted with
+- `make test` runs the offline test suite (530 tests, about 40 seconds); model calls are scripted with
   `FakeLLM`, so no API key is needed.
 
 ## Team

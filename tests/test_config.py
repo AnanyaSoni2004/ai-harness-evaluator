@@ -81,16 +81,21 @@ def test_token_budget_keys_are_not_secrets(tmp_path: Path) -> None:
 
 def test_api_key_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AI_API_KEY", "   ")
-    with pytest.raises(HarnessError, match="AI_API_KEY is not set"):
+    with pytest.raises(HarnessError, match="No API key found"):
         load_config().api_key()
     monkeypatch.delenv("AI_API_KEY")
-    with pytest.raises(HarnessError):
-        load_config().api_key()
+    with pytest.raises(HarnessError, match="No API key for openai/x: set AI_API_KEY or OPENAI_API_KEY"):
+        load_config(model="openai/x").api_key()
 
 
 def test_api_key_present(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AI_API_KEY", " fake-key-for-test ")
-    assert load_config().api_key() == "fake-key-for-test"
+    assert load_config(model="openai/x").api_key() == "fake-key-for-test"
+
+
+def test_secrets_refused_in_presets(tmp_path: Path) -> None:
+    with pytest.raises(HarnessError, match="Secrets must not be stored"):
+        load_config(_write(tmp_path, "presets:\n  mine:\n    name: openai/x\n    api_key: abc\n"))
 
 
 def test_missing_explicit_file(tmp_path: Path) -> None:

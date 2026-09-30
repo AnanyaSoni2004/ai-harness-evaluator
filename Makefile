@@ -1,5 +1,6 @@
 # AI Coding Harness — evaluator entry points.
-# The API key is read ONLY from the AI_API_KEY environment variable; it is never written here.
+# The API key is read from the environment (AI_API_KEY, or the provider's own variable such as GEMINI_API_KEY);
+# it is never written here. Choose the model with MODEL=<preset|provider/model>, e.g. make run MODEL=gemini.
 # Recipe lines are indented with TABs.
 
 VENV := .venv
@@ -10,6 +11,13 @@ PYTHON ?= $(shell for p in python3.12 python3.11 python3.10 python3.13 python3.1
 	command -v $$p >/dev/null 2>&1 && $$p -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,15) else 1)' 2>/dev/null && { echo $$p; break; }; \
 	done)
 
+# Model choice for run, ping, demo and eval: a preset from config.yaml (groq, gemini, openai, qwen, ollama, ...)
+# or any LiteLLM "<provider>/<model>". Empty = model.name in config.yaml (auto = detect from the key).
+MODEL_ARGS :=
+ifneq ($(strip $(MODEL)),)
+MODEL_ARGS += --model "$(MODEL)"
+endif
+
 # Optional inputs for non-interactive runs: make run REPO=<path|url> ISSUE_FILE=<file>
 RUN_ARGS :=
 ifneq ($(strip $(REPO)),)
@@ -19,7 +27,7 @@ ifneq ($(strip $(ISSUE_FILE)),)
 RUN_ARGS += --issue-file "$(ISSUE_FILE)"
 endif
 
-.PHONY: setup run test clean ping demo eval check-key
+.PHONY: setup run test clean ping demo eval check-env
 
 setup:
 	@test -n "$(PYTHON)" || { echo "ERROR: Python 3.10-3.14 is required (python3 on PATH is too old or missing)." >&2; exit 1; }
@@ -28,27 +36,27 @@ setup:
 	$(PY) -m pip install --upgrade pip -q
 	$(PY) -m pip install -r requirements.txt -q
 	@$(PY) -m harness --self-check
-	@echo "Setup complete. Export AI_API_KEY, then run: make run"
+	@echo 'Setup complete. Export your key (export AI_API_KEY="<key>"), then run: make ping, make run'
 
-check-key:
-	@test -n "$$AI_API_KEY" || { echo 'ERROR: AI_API_KEY is not set. Run: export AI_API_KEY="<key>"' >&2; exit 1; }
+# The key itself is checked by the harness, which knows each provider's variable and that local models need none.
+check-env:
 	@test -x $(PY) || { echo "ERROR: environment not installed. Run: make setup" >&2; exit 1; }
 
-run: check-key
-	@$(PY) -m harness $(RUN_ARGS)
+run: check-env
+	@$(PY) -m harness $(MODEL_ARGS) $(RUN_ARGS)
 
 test:
 	@test -x $(PY) || { echo "ERROR: environment not installed. Run: make setup" >&2; exit 1; }
 	$(PY) -m pytest
 
-ping: check-key
-	@$(PY) -m harness --ping
+ping: check-env
+	@$(PY) -m harness --ping $(MODEL_ARGS)
 
-demo: check-key
-	@$(PY) -m harness --demo
+demo: check-env
+	@$(PY) -m harness --demo $(MODEL_ARGS)
 
-eval: check-key
-	@$(PY) scripts/eval.py $(EVAL_ARGS)
+eval: check-env
+	@$(PY) scripts/eval.py $(MODEL_ARGS) $(EVAL_ARGS)
 
 clean:
 	rm -rf $(VENV) runs .pytest_cache

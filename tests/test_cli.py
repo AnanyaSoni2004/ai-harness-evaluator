@@ -28,7 +28,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setenv("COLUMNS", "200")
     monkeypatch.delenv("REPO", raising=False)
     config = tmp_path / "config.yaml"
-    config.write_text(f"output:\n  runs_dir: {tmp_path / 'runs'}\n  workspaces_dir: {tmp_path / 'ws'}\n"
+    config.write_text(f"model:\n  name: openai/test-model\noutput:\n  runs_dir: {tmp_path / 'runs'}\n  workspaces_dir: {tmp_path / 'ws'}\n"
                       "phases:\n  enable_rescue: false\n  max_fix_attempts: 1\n")
     repo = tmp_path / "repo"
     (repo / "tests").mkdir(parents=True)
@@ -114,7 +114,7 @@ def test_interactive_asks_to_solve_another(env, monkeypatch) -> None:
 def test_missing_key(env, monkeypatch, capsys) -> None:
     monkeypatch.delenv("AI_API_KEY")
     assert cli.main(base_args(env)) == 1
-    assert "AI_API_KEY is not set" in capsys.readouterr().out
+    assert "No API key for openai/test-model: set AI_API_KEY or OPENAI_API_KEY" in capsys.readouterr().out
 
 
 def test_self_check_needs_no_key(monkeypatch, capsys) -> None:

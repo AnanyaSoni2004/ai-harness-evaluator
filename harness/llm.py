@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import re
 import time
@@ -9,7 +10,7 @@ from typing import Any, Callable
 
 import litellm
 
-from harness import textproto
+from harness import providers, textproto
 from harness.events import NullUI, Trajectory
 from harness.types import (
     BudgetExceeded,
@@ -23,6 +24,8 @@ from harness.types import (
 
 litellm.drop_params = True
 litellm.suppress_debug_info = True
+# LiteLLM logs provider notices (e.g. Gemini 3 parameter deprecations) on every call; errors still reach us as exceptions.
+logging.getLogger("LiteLLM").setLevel(logging.ERROR)
 
 
 def _exc_tuple(names: list[str]) -> tuple[type, ...]:
@@ -38,14 +41,19 @@ AUTH_ERRORS = _exc_tuple(["AuthenticationError", "PermissionDeniedError", "NotFo
 BAD_REQUEST = _exc_tuple(["BadRequestError"])
 RATE_LIMIT = _exc_tuple(["RateLimitError"])
 
-# Provider limits that waiting a minute cannot fix (Groq: "tokens per day (TPD)"; OpenAI: quota).
-_DAILY_LIMIT = re.compile(r"per day|\((?:TPD|RPD)\)|insufficient_quota|exceeded your current quota", re.I)
+# Provider limits that waiting a minute cannot fix (Groq: "tokens per day (TPD)"; Gemini: quotaId "...PerDay...";
+# OpenAI: insufficient_quota). Gemini's per-minute limits also say "exceeded your current quota": see _is_daily_limit.
+_DAILY_LIMIT = re.compile(r"per ?day|\((?:TPD|RPD)\)|insufficient_quota", re.I)
+_QUOTA = re.compile(r"exceeded your current quota", re.I)
+_PER_MINUTE = re.compile(r"per ?minute|\((?:TPM|RPM)\)", re.I)
 # One request asks for more output than the per-minute output limit allows: shrink max_tokens instead.
 _OUTPUT_TOO_LARGE = re.compile(r"Request too large.*?output tokens per minute.*?Limit (\d+)", re.I | re.S)
 _TOO_LARGE = re.compile(r"Request too large", re.I)
 # The per-minute input limit (Groq: "tokens per minute (TPM): Limit 8000"). One prompt above it can never succeed.
-_TPM_LIMIT = re.compile(r"tokens per minute \(TPM\):\s*Limit (\d+)", re.I)
-_TRY_AGAIN = re.compile(r"try again in\s+([0-9hms.]+)", re.I)
+# OpenAI words it "tokens per min (TPM): Limit 30000".
+_TPM_LIMIT = re.compile(r"tokens per min(?:ute)? \(TPM\):\s*Limit (\d+)", re.I)
+# Groq/OpenAI: "try again in 1m26.4s"; Gemini: "Please retry in 36.9s." and "retryDelay": "36s".
+_TRY_AGAIN = re.compile(r"(?:try again|retry) in\s+([0-9hms.]+)|\"retryDelay\":\s*\"([0-9.]+s)\"", re.I)
 _PROVIDER_MESSAGE = re.compile(r'"message"\s*:\s*"([^"]+)"')
 MAX_HINTED_WAIT_S = 90.0
 MIN_MAX_TOKENS = 256
@@ -86,8 +94,16 @@ def parse_wait_hint(text: str) -> float | None:
     if not m:
         return None
     units = {"ms": 0.001, "h": 3600.0, "m": 60.0, "s": 1.0}
-    parts = re.findall(r"(\d+(?:\.\d+)?)(ms|h|m|s)", m.group(1))
+    parts = re.findall(r"(\d+(?:\.\d+)?)(ms|h|m|s)", m.group(1) or m.group(2))
     return sum(float(n) * units[u] for n, u in parts) if parts else None
+
+
+def _is_daily_limit(text: str) -> bool:
+    """A limit that waiting cannot fix. "exceeded your current quota" alone is OpenAI billing, but Gemini uses the
+    same words for its per-minute limits, which name the minute window or come with a retry delay."""
+    if _DAILY_LIMIT.search(text):
+        return True
+    return bool(_QUOTA.search(text)) and not _PER_MINUTE.search(text) and parse_wait_hint(text) is None
 
 
 def _provider_message(error: Exception) -> str:
@@ -100,7 +116,7 @@ def _provider_message(error: Exception) -> str:
     msg = re.split(r"\s*Need more tokens\?", msg)[0]  # provider upsell text
     return msg[:300]
 
-AUTH_MESSAGE = "Authentication/model error: check AI_API_KEY and model.name in config.yaml"
+AUTH_MESSAGE = "Authentication/model error: check the API key and model.name in config.yaml (or MODEL=...)"
 
 PING_TOOL = {
     "type": "function",
@@ -116,7 +132,7 @@ PING_TOOL = {
 }
 
 # Optional request parameters some endpoints reject; dropped per model after the first rejection.
-DROPPABLE_PARAMS = ("seed", "temperature", "tool_choice")
+DROPPABLE_PARAMS = ("seed", "temperature", "tool_choice", "reasoning_effort")
 _DROPPED_PARAMS: dict[str, set[str]] = {}
 
 
@@ -243,20 +259,37 @@ class LLMClient:
         if self.metrics.llm_calls >= budgets.max_llm_calls:
             raise BudgetExceeded(f"LLM call budget exhausted ({self.metrics.llm_calls} calls)")
 
+    def _auth_message(self, error: Exception) -> str:
+        """AUTH_MESSAGE plus the provider's reason and a hint when the key belongs to another provider."""
+        m = self.cfg.model
+        parts = [f"{AUTH_MESSAGE}. Model: {m.name}", _provider_message(error)]
+        key, _ = self.cfg.key_and_source()
+        hint = providers.key_mismatch(key or "", providers.provider_of(m.name))
+        if hint:
+            parts.append(hint)
+        if providers.provider_of(m.name) == "dashscope":
+            parts.append("DashScope keys are region-specific: MODEL=qwen is the international endpoint, "
+                         "MODEL=qwen-cn the China one")
+        return " | ".join(p for p in parts if p)
+
     def _call_with_retries(self, messages: list[dict], tools: list[dict] | None, phase: str) -> Any:
         """Call litellm.completion, retrying transient errors and mapping the rest to harness errors."""
         m = self.cfg.model
         kwargs: dict[str, Any] = {
             "model": m.name,
             "messages": messages,
-            "api_key": self.cfg.api_key(),
             "api_base": m.api_base,
-            "temperature": m.temperature,
             "max_tokens": min(m.max_output_tokens, _MAX_TOKENS_CAP.get(m.name, m.max_output_tokens)),
             "timeout": m.request_timeout_s,
         }
+        # A local model needs no key, but OpenAI-compatible clients refuse to send a request without one.
+        kwargs["api_key"] = self.cfg.api_key() or providers.LOCAL_PLACEHOLDER_KEY
+        if m.temperature is not None:
+            kwargs["temperature"] = m.temperature
         if m.seed is not None:
             kwargs["seed"] = m.seed
+        if getattr(m, "reasoning_effort", None):
+            kwargs["reasoning_effort"] = m.reasoning_effort
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -271,7 +304,7 @@ class LLMClient:
             except CONTEXT_ERRORS as e:
                 raise ContextOverflow(str(e)) from e
             except AUTH_ERRORS as e:
-                raise FatalLLMError(AUTH_MESSAGE) from e
+                raise FatalLLMError(self._auth_message(e)) from e
             except BAD_REQUEST as e:
                 if _REJECTED_GENERATION.search(str(e)):
                     raise ToolUseFailed(_failed_generation(e), _provider_message(e)) from e
@@ -286,7 +319,7 @@ class LLMClient:
                 self.ui.warn(f"Endpoint rejected '{param}'; dropping it for this run")
             except RATE_LIMIT as e:
                 text = str(e)
-                if _DAILY_LIMIT.search(text):
+                if _is_daily_limit(text):
                     raise BudgetExceeded(f"provider daily/quota limit reached: {_provider_message(e)}") from e
                 too_large = _OUTPUT_TOO_LARGE.search(text)
                 if too_large:

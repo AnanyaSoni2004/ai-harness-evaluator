@@ -101,4 +101,4 @@ def test_summary_markdown_with_comparison() -> None:
 
 def test_main_requires_key(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     monkeypatch.delenv("AI_API_KEY", raising=False)
-    assert ev.main([]) == 1 and "AI_API_KEY is not set" in capsys.readouterr().out
+    assert ev.main([]) == 1 and "No API key found" in capsys.readouterr().out

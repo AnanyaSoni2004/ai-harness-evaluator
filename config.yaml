@@ -1,29 +1,60 @@
-# Model: set name to the organiser-prescribed model (LiteLLM format "<provider>/<model>").
-# The API key is NEVER stored here. It is read from the AI_API_KEY environment variable.
+# Model: pick a preset below or any LiteLLM "<provider>/<model>" string. The API key is NEVER stored here:
+# it is read from AI_API_KEY or, if that is unset, from the provider's own variable (GEMINI_API_KEY,
+# OPENAI_API_KEY, DASHSCOPE_API_KEY, GROQ_API_KEY, ...). Local models (Ollama) need no key.
 #
-# Ready-to-use profiles (copy name / api_base / context_window into the model section below):
-# DeepSeek (official):    name: "deepseek/deepseek-chat"     api_base: null            context_window: 65536
-# DeepSeek (reasoner):    name: "deepseek/deepseek-reasoner" api_base: null            context_window: 65536
-# Qwen (DashScope):       name: "dashscope/qwen-max"         api_base: null            context_window: 32768
-# Any OpenAI-compatible:  name: "openai/<served-model-name>"  api_base: "http://<host>:<port>/v1"
-# Qwen (Groq):            name: "groq/qwen/qwen3.8-27b"       api_base: null            context_window: 131072
+# Choose without editing this file:  make run MODEL=gemini   (or --model / HARNESS_MODEL)
+# name: auto picks the preset from the key's format (gsk_ -> groq, AIza -> gemini, sk-proj- -> openai,
+# sk-or- -> openrouter) or, without AI_API_KEY, from whichever provider variable is set.
 #
-# context_window drives the context budgets: working_budget_tokens is capped at 55% of it and
-# max_tool_output_chars at ~6% of it (see harness/config.py), so a 32k model never gets a 48k prompt.
+# context_window: null reads the window from LiteLLM's model table (32768 when unknown). It drives the
+# context budgets: working_budget_tokens is capped at 55% of it and max_tool_output_chars at ~6% of it (see
+# harness/config.py), so a 32k model never gets a 48k prompt. api_base, context_window, tokens_per_minute,
+# reasoning_effort and force_text_mode_for describe one model, so they reset when another model is selected.
 model:
-  name: "groq/qwen/qwen3.8-27b"  # Qwen served by Groq (the key in AI_API_KEY is a Groq key)
+  name: auto
   api_base: null               # set only for OpenAI-compatible endpoints
-  temperature: 0.0
+  temperature: 0.0             # null = provider default
   seed: 42
   max_output_tokens: 4096
-  context_window: 131072
-  tokens_per_minute: 8000      # provider input-token rate limit (Groq on_demand for this model); null = unknown.
+  context_window: null
+  tokens_per_minute: null      # provider input-token rate limit; null = unknown (learned from the first error).
                                # One prompt above it is always rejected, so it caps the context budgets.
+  reasoning_effort: null       # low | medium | high for reasoning models; null = provider default
   tool_mode: auto             # auto | native | text  (auto = probe the endpoint once; keep auto)
-  force_text_mode_for: ["qwen3"]  # case-insensitive substrings of name that skip the probe
+  force_text_mode_for: []     # case-insensitive substrings of name that skip the probe and use text mode
   max_consecutive_parse_failures: 3   # end a phase (reason protocol_failure) after this many unparseable replies
   request_timeout_s: 120
   max_retries: 5
+presets:                       # model settings applied by name: make run MODEL=<preset>
+  groq:                        # key: gsk_... (GROQ_API_KEY)
+    name: "groq/qwen/qwen3.8-27b"
+    tokens_per_minute: 8000    # Groq on_demand tier for this model
+    force_text_mode_for: ["qwen3"]   # Groq's native tool calling for this model proved unreliable in live probing
+  gemini:                      # key: AIza... (GEMINI_API_KEY) from Google AI Studio
+    name: "gemini/gemini-3.5-flash"
+    temperature: null          # Google recommends the default (1.0) for Gemini 3; lower values can cause looping
+    reasoning_effort: low      # thinking tokens count against max_output_tokens
+    max_output_tokens: 8192
+  openai:                      # key: sk-proj-... (OPENAI_API_KEY)
+    name: "openai/gpt-5.4-mini"
+    temperature: null          # reasoning models accept only the default
+    reasoning_effort: low
+    max_output_tokens: 8192
+  qwen:                        # Alibaba Model Studio key (DASHSCOPE_API_KEY), international (Singapore) region
+    name: "dashscope/qwen3-coder-plus"
+    api_base: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+  qwen-cn:                     # the same model for a key from the China (Beijing) region
+    name: "dashscope/qwen3-coder-plus"
+    api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  openrouter:                  # key: sk-or-... (OPENROUTER_API_KEY)
+    name: "openrouter/qwen/qwen3-coder"
+  deepseek:                    # DEEPSEEK_API_KEY
+    name: "deepseek/deepseek-chat"
+  ollama:                      # local model, no key: ollama pull qwen3:8b (Ollama running on this machine)
+    name: "ollama_chat/qwen3:8b"
+    api_base: "http://localhost:11434"
+    context_window: 32768
+    request_timeout_s: 600     # local generation is slow on a laptop CPU
 budgets:                       # per issue
   max_total_tokens: 120000       # hard cap: the run stops (status budget_exhausted)
   soft_total_tokens: 45000       # beyond this, no new fix attempts are started

@@ -205,7 +205,7 @@ def test_cli_never_shows_a_traceback(repo, cfg, monkeypatch, capsys, tmp_path) -
 
     monkeypatch.setenv("AI_API_KEY", "fake-key-for-cli")
     config = tmp_path / "c.yaml"
-    config.write_text(f"output:\n  runs_dir: {tmp_path / 'runs'}\n")
+    config.write_text(f"model:\n  name: openai/test-model\noutput:\n  runs_dir: {tmp_path / 'runs'}\n")
     monkeypatch.setattr(cli, "make_llm", lambda c, ui: FakeLLM([]))
     monkeypatch.setattr(Orch, "solve", lambda self, repo, issue: (_ for _ in ()).throw(RuntimeError("boom")))
     code = cli.main(["--config", str(config), "--repo", str(repo), "--issue", "x", "--non-interactive"])

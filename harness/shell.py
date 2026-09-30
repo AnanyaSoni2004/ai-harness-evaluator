@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 
+from harness import providers
 from harness.types import ProcessResult
 
 _PROJECT_VENV_BIN = Path(__file__).resolve().parents[1] / ".venv" / "bin"
@@ -23,9 +24,9 @@ def _harness_bin_dirs() -> set[str]:
 
 
 def sanitised_env(extra: dict | None = None) -> dict[str, str]:
-    """Environment for target-repo processes: no API key, no harness venv, non-interactive."""
+    """Environment for target-repo processes: no model API keys, no harness venv, non-interactive."""
     env = dict(os.environ)
-    for name in ("AI_API_KEY", "VIRTUAL_ENV", "PYTHONHOME"):
+    for name in (*providers.KEY_ENV_VARS, "VIRTUAL_ENV", "PYTHONHOME"):
         env.pop(name, None)
     blocked = _harness_bin_dirs()
     parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]

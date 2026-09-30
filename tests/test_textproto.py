@@ -179,7 +179,7 @@ def _client(monkeypatch, message, finish_reason="stop", tool_mode="text"):
                           usage=SimpleNamespace(prompt_tokens=5, completion_tokens=2))
     monkeypatch.setattr(litellm, "completion", lambda **kw: raw)
     llm_mod._TOOL_MODE_CACHE.clear()
-    cfg = load_config()
+    cfg = load_config(model="openai/test-model")
     cfg.model.tool_mode = tool_mode
     warnings: list[str] = []
     ui = SimpleNamespace(thinking=lambda label: __import__("contextlib").nullcontext(),

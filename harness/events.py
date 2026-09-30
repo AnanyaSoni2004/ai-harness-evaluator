@@ -3,20 +3,21 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import threading
 import time
 from pathlib import Path
 from typing import Any, ContextManager
 
+from harness import providers
+
 MIN_SECRET_LEN = 8
 
 
 def redact(text: str) -> str:
-    """Replace the current AI_API_KEY value (if at least 8 chars) with '***'."""
-    key = os.environ.get("AI_API_KEY", "").strip()
-    if len(key) >= MIN_SECRET_LEN and key in text:
-        return text.replace(key, "***")
+    """Replace the value of AI_API_KEY and of every provider key variable (if at least 8 chars) with '***'."""
+    for key in providers.redact_values():
+        if len(key) >= MIN_SECRET_LEN and key in text:
+            text = text.replace(key, "***")
     return text
 
 
